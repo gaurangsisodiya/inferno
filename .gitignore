@@ -34,3 +34,4 @@ htmlcov/
 
 # External datasets (fetched by scripts/setup_quixbugs.sh)
 data/
+results/runs/smoke.jsonl
