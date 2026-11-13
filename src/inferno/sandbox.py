@@ -1,4 +1,4 @@
-"""Run one QuixBugs program's tests inside a locked-down Docker container.
+"""Run one QuixBugs program's tests (or its Hypothesis properties) inside a locked-down Docker container.
 
 Model-written code is untrusted: it could loop forever, eat memory, or try to
 read files / reach the network. So the tests never run on the host. Instead:
@@ -25,6 +25,7 @@ Inside the container the files are laid out like the QuixBugs repo:
 
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 import uuid
@@ -36,12 +37,17 @@ from inferno.client import REPO_ROOT
 QUIXBUGS_DIR = REPO_ROOT / "data" / "quixbugs"
 PRIVATE_DIR = Path(os.environ.get("INFERNO_PRIVATE", Path.home() / "inferno-private"))
 
-IMAGE = "inferno-sandbox:py3.12"
 DOCKERFILE = REPO_ROOT / "docker" / "sandbox.Dockerfile"
+# The tag includes a hash of the Dockerfile, so changing it (e.g. adding a
+# package) makes ensure_image() build a new image instead of reusing a stale one.
+IMAGE = f"inferno-sandbox:py3.12-{hashlib.sha256(DOCKERFILE.read_bytes()).hexdigest()[:12]}"
 CONTAINER_ROOT = "/quixbugs"
 
 PER_TEST_TIMEOUT_S = 5  # pytest-timeout, per individual test case
 HARD_TIMEOUT_S = 120  # whole `docker run`, enforced by subprocess
+# One property test runs ~200 Hypothesis examples, so it gets a longer limit.
+PROPERTY_TEST_TIMEOUT_S = 30
+PROPERTY_HARD_TIMEOUT_S = 240
 MEMORY_LIMIT = "512m"
 
 
@@ -80,18 +86,13 @@ def needed_test_files(program: str, quixbugs_dir: Path = QUIXBUGS_DIR) -> list[t
     return mounts
 
 
-def build_docker_command(
-    program: str,
-    workspace: Path,
+def _docker_command(
     container_name: str,
-    quixbugs_dir: Path = QUIXBUGS_DIR,
-    private_dir: Path = PRIVATE_DIR,
-    per_test_timeout: int = PER_TEST_TIMEOUT_S,
+    mounts: list[tuple[Path, str]],
+    pytest_args: list[str],
+    private_dir: Path,
 ) -> list[str]:
-    """Build the `docker run ...` argument list. Kept separate so tests can inspect it."""
-    mounts = [(workspace / "python_programs", f"{CONTAINER_ROOT}/python_programs")]
-    mounts += needed_test_files(program, quixbugs_dir)
-
+    """`docker run` with every lockdown flag, the given read-only mounts, then pytest."""
     cmd = [
         "docker", "run", "--rm",
         "--name", container_name,
@@ -106,6 +107,9 @@ def build_docker_command(
         "--security-opt", "no-new-privileges",
         "--user", "65534:65534",  # "nobody"
         "--env", "PYTHONDONTWRITEBYTECODE=1",
+        "--env", f"PYTHONPATH={CONTAINER_ROOT}",
+        # Hypothesis would otherwise try to create .hypothesis/ in the read-only workdir.
+        "--env", "HYPOTHESIS_STORAGE_DIRECTORY=/tmp/.hypothesis",
         "--workdir", CONTAINER_ROOT,
     ]
     for host, target in mounts:
@@ -113,16 +117,52 @@ def build_docker_command(
         # --mount (unlike -v) errors if the host path is missing instead of
         # silently creating an empty directory.
         cmd += ["--mount", f"type=bind,source={host},target={target},readonly"]
-
     cmd += [
         IMAGE,
-        "python", "-m", "pytest",
-        f"python_testcases/test_{program}.py",
+        "python", "-m", "pytest", *pytest_args,
         f"--rootdir={CONTAINER_ROOT}",
-        f"--timeout={per_test_timeout}",
         "-q", "--tb=short", "-p", "no:cacheprovider",
     ]
     return cmd
+
+
+def build_docker_command(
+    program: str,
+    workspace: Path,
+    container_name: str,
+    quixbugs_dir: Path = QUIXBUGS_DIR,
+    private_dir: Path = PRIVATE_DIR,
+    per_test_timeout: int = PER_TEST_TIMEOUT_S,
+) -> list[str]:
+    """The `docker run ...` that runs the original QuixBugs tests. Kept separate so tests can inspect it."""
+    mounts = [(workspace / "python_programs", f"{CONTAINER_ROOT}/python_programs")]
+    mounts += needed_test_files(program, quixbugs_dir)
+    args = [f"python_testcases/test_{program}.py", f"--timeout={per_test_timeout}"]
+    return _docker_command(container_name, mounts, args, private_dir)
+
+
+def build_property_command(
+    program: str,
+    workspace: Path,
+    property_file: Path,
+    container_name: str,
+    quixbugs_dir: Path = QUIXBUGS_DIR,
+    private_dir: Path = PRIVATE_DIR,
+    per_test_timeout: int = PROPERTY_TEST_TIMEOUT_S,
+) -> list[str]:
+    """The `docker run ...` that runs one program's Hypothesis properties.
+
+    Mounts only the candidate workspace, QuixBugs' conftest.py and this one
+    property file (at /quixbugs/properties/prop_<program>.py), all read-only.
+    """
+    target = f"{CONTAINER_ROOT}/properties/{property_file.name}"
+    mounts = [
+        (workspace / "python_programs", f"{CONTAINER_ROOT}/python_programs"),
+        (quixbugs_dir / "conftest.py", f"{CONTAINER_ROOT}/conftest.py"),
+        (property_file, target),
+    ]
+    args = [f"properties/{property_file.name}", f"--timeout={per_test_timeout}"]
+    return _docker_command(container_name, mounts, args, private_dir)
 
 
 def ensure_image() -> None:
@@ -147,15 +187,8 @@ def ensure_image() -> None:
         )
 
 
-def run_tests(
-    program: str,
-    workspace: Path,
-    quixbugs_dir: Path = QUIXBUGS_DIR,
-    hard_timeout: int = HARD_TIMEOUT_S,
-) -> SandboxResult:
-    """Run test_<program>.py against <workspace>/python_programs/<program>.py."""
-    name = f"inferno-{program}-{uuid.uuid4().hex[:8]}"
-    cmd = build_docker_command(program, workspace, name, quixbugs_dir)
+def _run(cmd: list[str], name: str, hard_timeout: int) -> SandboxResult:
+    """Run a docker command built above, enforcing the hard wall-clock timeout."""
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=hard_timeout)
     except subprocess.TimeoutExpired as e:
@@ -170,3 +203,27 @@ def run_tests(
     # pytest exit code 0 means every test passed. Anything else (failures,
     # import errors, "no tests collected") counts as a failure.
     return SandboxResult(passed=proc.returncode == 0, output=proc.stdout + proc.stderr)
+
+
+def run_tests(
+    program: str,
+    workspace: Path,
+    quixbugs_dir: Path = QUIXBUGS_DIR,
+    hard_timeout: int = HARD_TIMEOUT_S,
+) -> SandboxResult:
+    """Run test_<program>.py against <workspace>/python_programs/<program>.py."""
+    name = f"inferno-{program}-{uuid.uuid4().hex[:8]}"
+    return _run(build_docker_command(program, workspace, name, quixbugs_dir), name, hard_timeout)
+
+
+def run_properties(
+    program: str,
+    workspace: Path,
+    property_file: Path,
+    quixbugs_dir: Path = QUIXBUGS_DIR,
+    hard_timeout: int = PROPERTY_HARD_TIMEOUT_S,
+) -> SandboxResult:
+    """Run prop_<program>.py against <workspace>/python_programs/<program>.py."""
+    name = f"inferno-prop-{program}-{uuid.uuid4().hex[:8]}"
+    cmd = build_property_command(program, workspace, property_file, name, quixbugs_dir)
+    return _run(cmd, name, hard_timeout)

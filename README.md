@@ -20,6 +20,9 @@ scripts/setup_quixbugs.sh        # clones QuixBugs into data/quixbugs and
 | `src/inferno/sandbox.py` | Runs one program's tests in a locked-down Docker container. |
 | `src/inferno/loop.py` | The repair loop and its command-line entry point. |
 | `src/inferno/run_all.py` | Batch runner: repairs every program, writes `results/runs/<run_id>.jsonl`. |
+| `src/inferno/properties/` | Hypothesis properties, `prop_<program>.py`, for 10 programs. |
+| `src/inferno/validate.py`, `validate_run.py` | Re-check a run's fixes with original tests + properties, writes `results/validated/<run_id>.jsonl`. |
+| `scripts/check_properties.py` | Checks each property file passes on the reference version and fails on the buggy one. |
 | `docker/sandbox.Dockerfile` | Sandbox image (Python 3.12 + pytest), built automatically on first use. |
 | `tests/` | Tests for the agent itself (model and Docker are mocked). |
 | `scripts/setup_quixbugs.sh` | Clones QuixBugs into `data/quixbugs` and moves `correct_python_programs` and `correct_java_programs` to `~/inferno-private`. Idempotent. Set `QUIXBUGS_REF=<commit>` to pin a version. |
@@ -64,6 +67,35 @@ Each line records `program`, `model`, `attempts`, `passed`, `fixed_first_try`, `
 `git_dirty`, `quixbugs_commit` and `finished_at`. At the end it prints a summary of the whole file:
 fixed on the first try, fixed within 3 tries, total tokens and total cost. Commit before a real run
 so that `git_commit` identifies the code. The runner warns you if the tree is dirty.
+
+## Validating fixes with properties
+
+QuixBugs has only a few test cases per program, so a fix can pass them and still be wrong.
+`src/inferno/properties/prop_<program>.py` holds Hypothesis properties for 10 programs: bitcount,
+bucketsort, flatten, gcd, is_valid_parenthesization, kheapsort, powerset, quicksort, sqrt and
+to_base. Each property is a general statement about the output (e.g. "sorted and a permutation of
+the input"), checked on 200 generated inputs.
+
+```bash
+uv run python -m inferno.validate_run --run-id gptoss-v1
+```
+
+For each line of `results/runs/<run_id>.jsonl`, this takes `final_source`, runs the original
+tests and the properties in the sandbox, and appends to `results/validated/<run_id>.jsonl`:
+`passes_original`, `passes_properties` (`null` if the program has no properties), `valid` (`null`
+when the originals pass but there are no properties), `property_output` on failure, and
+`git_commit`. It is resumable like `run_all`. The summary lists the plausible-but-wrong fixes:
+programs that pass the original tests but fail the properties.
+
+Check the properties themselves with:
+
+```bash
+uv run python scripts/check_properties.py
+```
+
+Every property file must pass on the reference version and fail on the buggy one. This runs on the
+host, importing the reference programs from `~/inferno-private` via `PYTHONPATH`. It prints only
+pass/fail, never the reference code.
 
 Run the agent's own tests with `uv run pytest`.
 
