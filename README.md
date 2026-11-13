@@ -19,6 +19,7 @@ scripts/setup_quixbugs.sh        # clones QuixBugs into data/quixbugs and
 | `src/inferno/client.py` | Together AI wrapper (OpenAI-compatible client), token counting, cost estimate. |
 | `src/inferno/sandbox.py` | Runs one program's tests in a locked-down Docker container. |
 | `src/inferno/loop.py` | The repair loop and its command-line entry point. |
+| `src/inferno/run_all.py` | Batch runner: repairs every program, writes `results/runs/<run_id>.jsonl`. |
 | `docker/sandbox.Dockerfile` | Sandbox image (Python 3.12 + pytest), built automatically on first use. |
 | `tests/` | Tests for the agent itself (model and Docker are mocked). |
 | `scripts/setup_quixbugs.sh` | Clones QuixBugs into `data/quixbugs` and moves `correct_python_programs` and `correct_java_programs` to `~/inferno-private`. Idempotent. Set `QUIXBUGS_REF=<commit>` to pin a version. |
@@ -43,6 +44,26 @@ The sandbox runs with `--network none`, a 512 MB memory limit, a read-only root 
 non-root user. Each test has a 5s timeout, and the whole run has a hard 120s limit. Only the
 candidate's workspace and that program's QuixBugs test files are mounted, all read-only.
 Any mount overlapping `~/inferno-private` is refused.
+
+## Repairing every program
+
+```bash
+uv run python -m inferno.run_all                      # all 40 programs
+uv run python -m inferno.run_all --run-id smoke --limit 3
+uv run python -m inferno.run_all --programs gcd,bitcount
+```
+
+This runs the repair loop on each program that has a test file, one at a time. It appends one JSON
+line per program to `results/runs/<run_id>.jsonl` as soon as that program finishes. The default
+`--run-id` is `<model>_<date>`. Re-running with the same `--run-id` skips the programs already in
+the file. `--limit N` runs at most N programs that aren't done yet. A program whose repair raised an
+error (e.g. an API failure) isn't written to the file, so the next run retries it.
+
+Each line records `program`, `model`, `attempts`, `passed`, `fixed_first_try`, `tokens_in`,
+`tokens_out`, `cost_usd`, `seconds`, `final_source` (the last candidate tested), `git_commit`,
+`git_dirty`, `quixbugs_commit` and `finished_at`. At the end it prints a summary of the whole file:
+fixed on the first try, fixed within 3 tries, total tokens and total cost. Commit before a real run
+so that `git_commit` identifies the code. The runner warns you if the tree is dirty.
 
 Run the agent's own tests with `uv run pytest`.
 
