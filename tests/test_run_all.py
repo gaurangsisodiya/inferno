@@ -77,11 +77,11 @@ def make_factory(script=SCRIPT):
 
 def go(quixbugs, run_file, **kw):
     make, made = make_factory(kw.pop("script", SCRIPT))
-    errored = run_all.run_all(
+    outcome = run_all.run_all(
         kw.pop("programs", PROGRAMS), run_file, make, fake_sandbox,
         quixbugs_dir=quixbugs, git_commit="abc123", git_dirty=False, **kw,
     )
-    return errored, made
+    return outcome.errored, made
 
 
 def test_list_programs_needs_a_test_file(quixbugs):

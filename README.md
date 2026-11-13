@@ -20,6 +20,7 @@ scripts/setup_quixbugs.sh        # clones QuixBugs into data/quixbugs and
 | `src/inferno/sandbox.py` | Runs one program's tests in a locked-down Docker container. |
 | `src/inferno/loop.py` | The repair loop and its command-line entry point. |
 | `src/inferno/run_all.py` | Batch runner: repairs every program, writes `results/runs/<run_id>.jsonl`. |
+| `src/inferno/rename.py` | Neutral renaming of a program for the memorization check (`run_all --renamed`). |
 | `src/inferno/properties/` | Hypothesis properties, `prop_<program>.py`, for 10 programs. |
 | `src/inferno/validate.py`, `validate_run.py` | Re-check a run's fixes with original tests + properties, writes `results/validated/<run_id>.jsonl`. |
 | `scripts/check_properties.py` | Checks each property file passes on the reference version and fails on the buggy one. |
@@ -67,6 +68,32 @@ Each line records `program`, `model`, `attempts`, `passed`, `fixed_first_try`, `
 `git_dirty`, `quixbugs_commit` and `finished_at`. At the end it prints a summary of the whole file:
 fixed on the first try, fixed within 3 tries, total tokens and total cost. Commit before a real run
 so that `git_commit` identifies the code. The runner warns you if the tree is dirty.
+
+## Memorization check (renamed programs)
+
+QuixBugs is public, so a model may recognise a program instead of reasoning about it.
+`--renamed` repeats the run on programs with neutral identifiers:
+
+```bash
+uv run python -m inferno.run_all --renamed            # run id: <model>_<date>_renamed
+```
+
+`src/inferno/rename.py` uses `ast` to rename the main function to `f_1`, other functions to `f_2...`,
+parameters to `a_1...` and other variables to `v_1...`. It is scope-aware: builtins, imported names
+and attributes are never renamed. Comments and docstrings are dropped. The model sees the program as
+`f_1.py`, and test output has the original program/function name (incl. test names and file paths)
+replaced by `f_1`. Before each test run this alias line is appended to the candidate; the model
+never sees it:
+
+```python
+bitcount = f_1; bitcount.__name__ = bitcount.__qualname__ = "bitcount"
+```
+
+It restores `__name__` too, because most QuixBugs tests load their data with
+`load_json_testcases(<function>.__name__)`. Result lines have `renamed: true` and the `alias`;
+`final_source` is the model's renamed code without the alias, and `validate_run` appends the alias
+again when validating. Programs the renamer can't handle (classes, `global`, ...) are skipped and
+listed; none of the 40 currently need skipping.
 
 ## Validating fixes with properties
 

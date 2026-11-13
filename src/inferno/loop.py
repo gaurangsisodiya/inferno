@@ -29,6 +29,7 @@ from typing import Callable
 
 from inferno import sandbox
 from inferno.client import TogetherClient
+from inferno.rename import Renamed
 
 MAX_ATTEMPTS = 3
 MAX_FEEDBACK_CHARS = 8000  # keep prompts small when the test output is huge
@@ -53,7 +54,9 @@ class RepairResult:
     tokens_in: int
     tokens_out: int
     cost_usd: float | None  # None if the model's price is unknown
-    final_source: str = field(repr=False)  # last candidate file that was tested
+    # Last candidate as the model wrote it. In a renamed run this is the renamed
+    # code WITHOUT the alias line; the file actually tested was renamed.with_alias(it).
+    final_source: str = field(repr=False)
 
 
 # A function that takes (program, workspace) and returns a SandboxResult.
@@ -121,9 +124,25 @@ def repair(
     run_tests: TestRunner = sandbox.run_tests,
     max_attempts: int = MAX_ATTEMPTS,
     quixbugs_dir: Path = sandbox.QUIXBUGS_DIR,
+    renamed: Renamed | None = None,
 ) -> RepairResult:
-    """Try to fix `program`, calling the model at most `max_attempts` times."""
-    buggy_source = (quixbugs_dir / "python_programs" / f"{program}.py").read_text()
+    """Try to fix `program`, calling the model at most `max_attempts` times.
+
+    With `renamed` (memorization check), the model only ever sees the renamed
+    source, the name `f_1`, and test output with the original names scrubbed.
+    Each file that is tested gets the alias line appended so the QuixBugs tests
+    can still import the original name.
+    """
+    if renamed is None:
+        buggy_source = (quixbugs_dir / "python_programs" / f"{program}.py").read_text()
+        shown_name = program
+        to_file = lambda code: code  # noqa: E731
+        shown = lambda output: output  # noqa: E731
+    else:
+        buggy_source = renamed.source
+        shown_name = renamed.main_new
+        to_file = renamed.with_alias
+        shown = renamed.scrub
 
     def result(attempts: int, passed: bool, source: str) -> RepairResult:
         return RepairResult(
@@ -140,6 +159,7 @@ def repair(
     # TemporaryDirectory deletes the folder when the `with` block ends.
     with tempfile.TemporaryDirectory(prefix=f"inferno-{program}-") as tmp:
         target = make_workspace(program, Path(tmp), quixbugs_dir)
+        target.write_text(to_file(buggy_source))
 
         test_run = run_tests(program, Path(tmp))
         if test_run.passed:  # nothing to repair
@@ -147,13 +167,14 @@ def repair(
 
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": initial_prompt(program, buggy_source, test_run.output)},
+            {"role": "user",
+             "content": initial_prompt(shown_name, buggy_source, shown(test_run.output))},
         ]
         candidate = buggy_source
         for attempt in range(1, max_attempts + 1):
             reply = client.chat(messages)
             candidate = extract_code(reply.text)
-            target.write_text(candidate)
+            target.write_text(to_file(candidate))
 
             test_run = run_tests(program, Path(tmp))
             if test_run.passed:
@@ -161,7 +182,7 @@ def repair(
 
             # Keep the whole conversation so the model sees its previous attempt.
             messages.append({"role": "assistant", "content": reply.text})
-            messages.append({"role": "user", "content": retry_prompt(test_run.output)})
+            messages.append({"role": "user", "content": retry_prompt(shown(test_run.output))})
 
         return result(max_attempts, False, candidate)
 

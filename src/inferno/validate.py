@@ -49,13 +49,21 @@ def validate(
     quixbugs_dir: Path = sandbox.QUIXBUGS_DIR,
     properties_dir: Path = PROPERTIES_DIR,
 ) -> Validation:
-    """Check `record["final_source"]` (a line from results/runs/<run_id>.jsonl)."""
+    """Check `record["final_source"]` (a line from results/runs/<run_id>.jsonl).
+
+    For a renamed run (`record["renamed"]`), the stored final_source uses the
+    neutral names, so the record's alias line is appended before testing, exactly
+    as during the run. The tests and properties then import the original name.
+    """
     program = record["program"]
     prop_file = property_file(program, properties_dir)
 
     with tempfile.TemporaryDirectory(prefix=f"inferno-validate-{program}-") as tmp:
         target = make_workspace(program, Path(tmp), quixbugs_dir)
-        target.write_text(record["final_source"])
+        source = record["final_source"]
+        if record.get("renamed"):
+            source = source.rstrip("\n") + "\n\n" + record["alias"] + "\n"
+        target.write_text(source)
 
         original = run_tests(program, Path(tmp))
         props = run_properties(program, Path(tmp), prop_file) if prop_file else None

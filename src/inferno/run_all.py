@@ -4,6 +4,10 @@
     uv run python -m inferno.run_all --run-id smoke --limit 3
     uv run python -m inferno.run_all --programs gcd,bitcount
 
+With --renamed (memorization check), each program is renamed to neutral
+identifiers first (see inferno.rename); the default run id gets a
+"_renamed" suffix. Programs that can't be renamed are skipped and listed.
+
 Results go to results/runs/<run_id>.jsonl. Each line is written (and flushed
 to disk) as soon as that program finishes, so the run can be interrupted at
 any point. Re-running with the same --run-id skips programs already in the
@@ -23,13 +27,14 @@ import re
 import subprocess
 import sys
 import time
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
 
 from inferno import sandbox
 from inferno.client import REPO_ROOT, TogetherClient
 from inferno.loop import MAX_ATTEMPTS, TestRunner, repair
+from inferno.rename import RenameError, rename_program
 
 RUNS_DIR = REPO_ROOT / "results" / "runs"
 
@@ -41,10 +46,11 @@ def list_programs(quixbugs_dir: Path = sandbox.QUIXBUGS_DIR) -> list[str]:
     return sorted(n for n in names if (quixbugs_dir / "python_programs" / f"{n}.py").exists())
 
 
-def default_run_id(model: str, today: dt.date | None = None) -> str:
+def default_run_id(model: str, today: dt.date | None = None, renamed: bool = False) -> str:
     """e.g. 'openai-gpt-oss-120b_2026-11-14'. Slashes etc. become '-' so it's a valid filename."""
     today = today or dt.date.today()
-    return f"{re.sub(r'[^A-Za-z0-9._-]+', '-', model)}_{today.isoformat()}"
+    suffix = "_renamed" if renamed else ""
+    return f"{re.sub(r'[^A-Za-z0-9._-]+', '-', model)}_{today.isoformat()}{suffix}"
 
 
 def git_info(repo: Path = REPO_ROOT) -> tuple[str | None, bool | None]:
@@ -94,6 +100,12 @@ def append_result(path: Path, record: dict) -> None:
         os.fsync(f.fileno())
 
 
+@dataclass
+class RunOutcome:
+    errored: list[str] = field(default_factory=list)  # repair raised; not recorded, retried next time
+    rename_failed: dict[str, str] = field(default_factory=dict)  # program -> reason (--renamed only)
+
+
 def run_all(
     programs: Iterable[str],
     run_file: Path,
@@ -105,13 +117,15 @@ def run_all(
     git_dirty: bool | None = None,
     quixbugs_commit: str | None = None,
     limit: int | None = None,
-) -> list[str]:
+    renamed: bool = False,
+) -> RunOutcome:
     """Repair each program not already in `run_file`, appending a line per program.
 
     `make_client` is called once per program so token and cost totals are per program
     (TogetherClient's counters are cumulative). `limit` caps how many programs are run
     in this call, not counting ones skipped as already done.
-    Returns the programs whose repair raised an exception (nothing written for those).
+    With `renamed`, each program is renamed first; ones that can't be are skipped.
+    Nothing is written for programs that errored or couldn't be renamed.
     """
     done = {r["program"] for r in load_results(run_file)}
     todo = [p for p in programs if p not in done]
@@ -121,18 +135,27 @@ def run_all(
     if skipped:
         print(f"Skipping {skipped} program(s) already in {run_file.name}.")
 
-    errored = []
+    outcome = RunOutcome()
     for i, program in enumerate(todo, 1):
         print(f"[{i}/{len(todo)}] {program} ... ", end="", flush=True)
+        rn = None
+        if renamed:
+            buggy = (quixbugs_dir / "python_programs" / f"{program}.py").read_text()
+            try:
+                rn = rename_program(buggy, program)
+            except RenameError as e:
+                print(f"SKIPPED (rename failed: {e})")
+                outcome.rename_failed[program] = str(e)
+                continue
         start = time.monotonic()
         try:
             res = repair(
                 program, make_client(), run_tests,
-                max_attempts=max_attempts, quixbugs_dir=quixbugs_dir,
+                max_attempts=max_attempts, quixbugs_dir=quixbugs_dir, renamed=rn,
             )
         except Exception as e:  # noqa: BLE001 - one bad program must not stop the batch
             print(f"ERROR {type(e).__name__}: {e}")
-            errored.append(program)
+            outcome.errored.append(program)
             continue
         seconds = round(time.monotonic() - start, 2)
 
@@ -141,6 +164,8 @@ def run_all(
             fixed_first_try=res.passed and res.attempts == 1,
             max_attempts=max_attempts,
             seconds=seconds,
+            renamed=renamed,
+            alias=rn.alias_line if rn else None,  # appended to final_source when testing it
             run_id=run_file.stem,
             git_commit=git_commit,
             git_dirty=git_dirty,
@@ -150,7 +175,7 @@ def run_all(
         append_result(run_file, record)
         status = "PASS" if res.passed else "FAIL"
         print(f"{status} attempts={res.attempts} tokens={res.tokens_in}/{res.tokens_out} {seconds}s")
-    return errored
+    return outcome
 
 
 def summarize(results: list[dict]) -> str:
@@ -186,6 +211,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-attempts", type=int, default=MAX_ATTEMPTS)
     parser.add_argument("--limit", type=int, help="run at most N programs not already done")
     parser.add_argument("--programs", help="comma-separated subset, e.g. gcd,bitcount")
+    parser.add_argument("--renamed", action="store_true",
+                        help="memorization check: show the model neutrally renamed programs")
     args = parser.parse_args(argv)
 
     available = list_programs()
@@ -208,12 +235,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 2
 
-    run_id = args.run_id or default_run_id(model)
+    run_id = args.run_id or default_run_id(model, renamed=args.renamed)
     run_file = RUNS_DIR / f"{run_id}.jsonl"
-    other_models = {r["model"] for r in load_results(run_file)} - {model}
+    existing = load_results(run_file)
+    other_models = {r["model"] for r in existing} - {model}
     if other_models:
         print(f"error: {run_file} already has results for {', '.join(other_models)}, "
               f"not {model}. Use a different --run-id.", file=sys.stderr)
+        return 2
+    if any(r.get("renamed", False) != args.renamed for r in existing):
+        kind = "renamed" if not args.renamed else "non-renamed"
+        print(f"error: {run_file} already has {kind} results. Use a different --run-id.",
+              file=sys.stderr)
         return 2
 
     commit, dirty = git_info()
@@ -221,18 +254,23 @@ def main(argv: list[str] | None = None) -> int:
         print(f"warning: uncommitted changes; results will be tagged {commit} but may not match it",
               file=sys.stderr)
     quixbugs_commit, _ = git_info(sandbox.QUIXBUGS_DIR)
-    print(f"Run {run_id} | model {model} | commit {commit} -> {run_file}")
+    mode = " | RENAMED" if args.renamed else ""
+    print(f"Run {run_id} | model {model} | commit {commit}{mode} -> {run_file}")
 
-    errored = run_all(
+    outcome = run_all(
         programs, run_file, make_client,
         max_attempts=args.max_attempts, git_commit=commit, git_dirty=dirty,
-        quixbugs_commit=quixbugs_commit, limit=args.limit,
+        quixbugs_commit=quixbugs_commit, limit=args.limit, renamed=args.renamed,
     )
 
     print("\n" + summarize(load_results(run_file)))
-    if errored:
-        print(f"\n{len(errored)} program(s) errored and were not recorded "
-              f"(re-run with --run-id {run_id} to retry): {', '.join(errored)}")
+    if outcome.rename_failed:
+        print(f"\n{len(outcome.rename_failed)} program(s) skipped because renaming failed:")
+        for program, reason in outcome.rename_failed.items():
+            print(f"  - {program}: {reason}")
+    if outcome.errored:
+        print(f"\n{len(outcome.errored)} program(s) errored and were not recorded "
+              f"(re-run with --run-id {run_id} to retry): {', '.join(outcome.errored)}")
         return 1
     return 0
 

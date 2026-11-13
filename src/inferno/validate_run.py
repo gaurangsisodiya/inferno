@@ -63,6 +63,7 @@ def validate_run(
         line.update(
             run_id=rec.get("run_id", out_file.stem),
             model=rec.get("model"),
+            renamed=rec.get("renamed", False),
             run_passed=rec.get("passed"),  # what the repair run itself reported
             attempts=rec.get("attempts"),
             run_git_commit=rec.get("git_commit"),  # code that produced the fix
