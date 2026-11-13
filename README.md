@@ -16,11 +16,35 @@ scripts/setup_quixbugs.sh        # clones QuixBugs into data/quixbugs and
 
 | Path | Purpose |
 | --- | --- |
-| `src/inferno/` | The agent package (not built yet). |
+| `src/inferno/client.py` | Together AI wrapper (OpenAI-compatible client), token counting, cost estimate. |
+| `src/inferno/sandbox.py` | Runs one program's tests in a locked-down Docker container. |
+| `src/inferno/loop.py` | The repair loop and its command-line entry point. |
+| `docker/sandbox.Dockerfile` | Sandbox image (Python 3.12 + pytest), built automatically on first use. |
+| `tests/` | Tests for the agent itself (model and Docker are mocked). |
 | `scripts/setup_quixbugs.sh` | Clones QuixBugs into `data/quixbugs` and moves `correct_python_programs` and `correct_java_programs` to `~/inferno-private`. Idempotent. Set `QUIXBUGS_REF=<commit>` to pin a version. |
 | `data/quixbugs/` | QuixBugs checkout (gitignored, not a submodule). |
 | `results/` | Committed test baselines. |
 | `.env.example` | Template for `.env` (gitignored), which holds `TOGETHER_API_KEY`. |
+
+## Repairing a program
+
+Requires Docker (on WSL: enable Docker Desktop's WSL integration) and `TOGETHER_API_KEY` in `.env`.
+
+```bash
+uv run python -m inferno.loop --program bitcount
+uv run python -m inferno.loop --program gcd --max-attempts 1 --model openai/gpt-oss-120b
+```
+
+It prints the diff of the final candidate and a JSON record with `program`, `model`, `attempts`,
+`passed`, `tokens_in`, `tokens_out` and `cost_usd`. The model defaults to `INFERNO_MODEL`, or
+`openai/gpt-oss-120b` if that isn't set. The exit code is 0 if the repair passed.
+
+The sandbox runs with `--network none`, a 512 MB memory limit, a read-only root filesystem and a
+non-root user. Each test has a 5s timeout, and the whole run has a hard 120s limit. Only the
+candidate's workspace and that program's QuixBugs test files are mounted, all read-only.
+Any mount overlapping `~/inferno-private` is refused.
+
+Run the agent's own tests with `uv run pytest`.
 
 ## Running the QuixBugs tests
 

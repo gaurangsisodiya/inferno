@@ -7,7 +7,10 @@ authors = [
     { name = "Gaurang Sisodiya", email = "gaurangsisodiya@gmail.com" }
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "openai>=3.50.0",
+    "python-dotenv>=1.2.4",
+]
 
 [build-system]
 requires = ["uv_build>=0.13.5,<0.14.0"]
@@ -18,3 +21,7 @@ dev = [
     "pytest>=9.2.0",
     "pytest-timeout>=2.4.0",
 ]
+
+[tool.pytest.ini_options]
+# Only collect our own tests; data/quixbugs has its own test suite.
+testpaths = ["tests"]
