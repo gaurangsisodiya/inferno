@@ -9,7 +9,9 @@ the reference version.
 
 The properties describe the output from the program's spec. They are not
 copies of the reference solutions. Every test uses
-@settings(max_examples=200, deadline=None, derandomize=True, database=None).
+@settings(max_examples=200, deadline=None, derandomize=True, database=None,
+phases=[Phase.explicit, Phase.generate]) (no shrinking: the first failing
+example is enough) and caps each call to the program at 2s of CPU time.
 derandomize makes a validation run reproducible: the same candidate always
 gets the same examples. database=None keeps Hypothesis from writing a
 .hypothesis/ directory.

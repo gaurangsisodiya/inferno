@@ -28,7 +28,10 @@ from pathlib import Path
 from inferno.sandbox import PRIVATE_DIR, QUIXBUGS_DIR
 from inferno.validate import PROPERTIES_DIR, programs_with_properties
 
-PER_TEST_TIMEOUT_S = 20  # buggy versions often loop forever
+# Backstops only: each call to the program is already capped at 2s of CPU
+# inside the property files (time_limited), and shrinking is off.
+PER_TEST_TIMEOUT_S = 60
+HARD_TIMEOUT_S = 300
 
 
 def run_properties(program: str, package: str, pythonpath: Path) -> dict[str, bool]:
@@ -38,12 +41,15 @@ def run_properties(program: str, package: str, pythonpath: Path) -> dict[str, bo
                PYTHONDONTWRITEBYTECODE="1")
     with tempfile.TemporaryDirectory() as tmp:
         report = Path(tmp) / "report.xml"
-        subprocess.run(
-            [sys.executable, "-m", "pytest", str(prop_file), "-q", "--tb=no", "--no-header",
-             "-p", "no:cacheprovider", f"--timeout={PER_TEST_TIMEOUT_S}",
-             f"--junitxml={report}"],
-            env=env, cwd=tmp, capture_output=True, text=True, timeout=900,
-        )
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pytest", str(prop_file), "-q", "--tb=no", "--no-header",
+                 "-p", "no:cacheprovider", f"--timeout={PER_TEST_TIMEOUT_S}",
+                 f"--junitxml={report}"],
+                env=env, cwd=tmp, capture_output=True, text=True, timeout=HARD_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            return {f"<whole file timed out after {HARD_TIMEOUT_S}s>": False}
         if not report.exists():
             return {"<collection>": False}
         cases = ET.parse(report).getroot().iter("testcase")
@@ -61,6 +67,7 @@ def main(argv: list[str]) -> int:
     programs = argv or programs_with_properties()
     problems = []
     for program in programs:
+        print(f"... {program}", end="\r", flush=True)
         on_correct = run_properties(program, "correct_python_programs", PRIVATE_DIR)
         on_buggy = run_properties(program, "python_programs", QUIXBUGS_DIR)
 

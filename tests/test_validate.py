@@ -247,3 +247,21 @@ def test_check_script_reports_import_failure(tmp_path):
     script = load_script()
     res = script.run_properties("bitcount", "no_such_pkg", tmp_path)
     assert not all(res.values())
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("program,body", [
+    ("bitcount", "def bitcount(n):\n    while True:\n        pass\n"),  # infinite loop
+    ("flatten", "def flatten(arr):\n    while True:\n        yield 1\n"),  # endless generator
+])
+def test_looping_program_fails_fast_instead_of_hanging(tmp_path, program, body):
+    """Regression: a timeout must not trigger Hypothesis shrinking that loops forever."""
+    import time
+
+    script = load_script()
+    (tmp_path / "loop_pkg").mkdir()
+    (tmp_path / "loop_pkg" / f"{program}.py").write_text(body)
+    start = time.monotonic()
+    res = script.run_properties(program, "loop_pkg", tmp_path)
+    assert not any(res.values())
+    assert time.monotonic() - start < 30
