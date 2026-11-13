@@ -17,7 +17,7 @@ scripts/setup_quixbugs.sh        # clones QuixBugs into data/quixbugs and
 | Path | Purpose |
 | --- | --- |
 | `src/inferno/` | The agent package (not built yet). |
-| `scripts/setup_quixbugs.sh` | Clones QuixBugs into `data/quixbugs` and moves `correct_python_programs` to `~/inferno-private`. Idempotent. Set `QUIXBUGS_REF=<commit>` to pin a version. |
+| `scripts/setup_quixbugs.sh` | Clones QuixBugs into `data/quixbugs` and moves `correct_python_programs` and `correct_java_programs` to `~/inferno-private`. Idempotent. Set `QUIXBUGS_REF=<commit>` to pin a version. |
 | `data/quixbugs/` | QuixBugs checkout (gitignored, not a submodule). |
 | `results/` | Committed test baselines. |
 | `.env.example` | Template for `.env` (gitignored), which holds `TOGETHER_API_KEY`. |
@@ -44,9 +44,13 @@ Baselines (QuixBugs commit `4257f44`, 10s per-test timeout):
 
 ## Keeping the reference solutions private
 
-`scripts/setup_quixbugs.sh` moves `correct_python_programs/` to
-`~/inferno-private/correct_python_programs` (override with `INFERNO_PRIVATE=...`),
-so the agent's view of the repo never includes the answers.
+`scripts/setup_quixbugs.sh` moves both sets of reference solutions out of the repo
+(override the destination with `INFERNO_PRIVATE=...`):
+
+- `correct_python_programs/` → `~/inferno-private/correct_python_programs`
+- `correct_java_programs/` → `~/inferno-private/correct_java_programs`
+
+This way the agent's view of the repo never includes the answers.
 
 ### Running `--correct` tests anyway
 
@@ -62,5 +66,5 @@ If you run `--correct` without that `PYTHONPATH`, every test module fails at imp
 
 Do not give the agent this `PYTHONPATH` or access to `~/inferno-private`.
 
-> Note: `data/quixbugs/correct_java_programs/` still contains Java versions of the fixes.
-> The agent should not have access to that directory either.
+The Java correct-version tests (`java_testcases/junit/crt_program/`) reference
+`correct_java_programs` and won't compile without it. This project doesn't run the Java tests.

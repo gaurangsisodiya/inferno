@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Reproducibly fetch QuixBugs into data/quixbugs and move the reference
-# (correct) programs out of the repo so the repair agent can never read them.
+# (correct) Python and Java programs out of the repo so the repair agent can never read them.
 #
 # Usage: scripts/setup_quixbugs.sh
 # Env overrides:
@@ -26,18 +26,20 @@ if [[ -n "${QUIXBUGS_REF:-}" ]]; then
 fi
 echo "QuixBugs at commit $(git -C "$DEST" rev-parse HEAD)"
 
-# 2. Move correct_python_programs out of the repo.
-SRC_CORRECT="$DEST/correct_python_programs"
-DST_CORRECT="$PRIVATE_DIR/correct_python_programs"
-if [[ -d "$SRC_CORRECT" ]]; then
-    if [[ -e "$DST_CORRECT" ]]; then
-        echo "$DST_CORRECT already exists; removing the in-repo copy instead of overwriting it."
-        rm -rf "$SRC_CORRECT"
+# 2. Move the reference solutions (Python and Java) out of the repo.
+for name in correct_python_programs correct_java_programs; do
+    src="$DEST/$name"
+    dst="$PRIVATE_DIR/$name"
+    if [[ -d "$src" ]]; then
+        if [[ -e "$dst" ]]; then
+            echo "$dst already exists; removing the in-repo copy instead of overwriting it."
+            rm -rf "$src"
+        else
+            mkdir -p "$PRIVATE_DIR"
+            mv "$src" "$dst"
+            echo "Moved $name -> $dst"
+        fi
     else
-        mkdir -p "$PRIVATE_DIR"
-        mv "$SRC_CORRECT" "$DST_CORRECT"
-        echo "Moved correct_python_programs -> $DST_CORRECT"
+        echo "$name not in repo (already moved)."
     fi
-else
-    echo "correct_python_programs not in repo (already moved)."
-fi
+done
