@@ -150,6 +150,10 @@ so only one task image is on disk at a time. Results:
 Cost comes from litellm's price or, failing that, our own table; a call
 with no known price makes the task's `cost_usd` null (never a silent 0), and
 the run refuses to start for such a model unless `--allow-unknown-cost`.
+litellm's prices are the list bundled with its pinned version (uv.lock), not
+one downloaded at startup (`LITELLM_LOCAL_MODEL_COST_MAP=True` is set by the
+runner and checked in the worker). Each line records `litellm_version`,
+`price_map_source`/`price_map_revision`, and `price_source` (litellm or table).
 
 ## Running the QuixBugs tests
 

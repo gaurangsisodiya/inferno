@@ -3,6 +3,7 @@
 import json
 import os
 import random
+import subprocess
 import sys
 import time
 
@@ -77,7 +78,7 @@ def traj(steps, tokens_in=1000, tokens_out=100, cost=0.01, source="litellm"):
     for _ in range(steps):
         msgs.append({"role": "assistant", "extra": {
             "response": {"usage": {"prompt_tokens": tokens_in, "completion_tokens": tokens_out}},
-            "cost": cost, "cost_source": source}})
+            "cost": cost, "price_source": source}})
         msgs.append({"role": "tool"})
     return {"info": {"model_stats": {"api_calls": steps}}, "messages": msgs}
 
@@ -118,7 +119,9 @@ class FakeRunner:
 
 
 PLAN = {
-    "psf__requests-1": sr.TaskRun("Submitted", "diff --git a/x b/x\n", traj(3), seconds=12.0),
+    "psf__requests-1": sr.TaskRun("Submitted", "diff --git a/x b/x\n", traj(3), seconds=12.0,
+                                  litellm={"litellm_version": "9.9.9", "price_map_source": "local",
+                                           "price_map_revision": "abc123"}),
     "psf__requests-2": sr.TaskRun("LimitsExceeded", "", traj(50)),
     "psf__requests-3": RuntimeError("model API down"),
 }
@@ -146,7 +149,7 @@ def test_one_line_per_task_with_all_fields(tmp_path):
 
     assert (ok["outcome"], ok["exit_status"], ok["patch"]) == ("submitted", "Submitted", "diff --git a/x b/x\n")
     assert (ok["steps"], ok["tokens_in"], ok["tokens_out"]) == (3, 3000, 300)
-    assert ok["cost_usd"] == pytest.approx(0.03) and ok["cost_source"] == "litellm"
+    assert ok["cost_usd"] == pytest.approx(0.03) and ok["price_source"] == "litellm"
     assert ok["seconds"] == 12.0 and ok["limit_hit"] is None
 
     assert (lim["outcome"], lim["limit_hit"], lim["steps"]) == ("limit", "steps", 50)
@@ -272,21 +275,21 @@ def raises(*a, **k):
 
 def test_cost_uses_litellm_when_it_knows_the_price():
     c = sr.cost_of_call("x/y", Resp(10, 10), litellm_cost=lambda r, model: 0.002)
-    assert c == {"cost": 0.002, "cost_source": "litellm"}
+    assert c == {"cost": 0.002, "price_source": "litellm"}
 
 
 def test_cost_falls_back_to_our_table():
     c = sr.cost_of_call("together_ai/openai/gpt-oss-120b", Resp(1_000_000, 1_000_000), litellm_cost=raises)
-    assert c["cost_source"] == "table" and c["cost"] == pytest.approx(0.75)
+    assert c["price_source"] == "table" and c["cost"] == pytest.approx(0.75)
     zero = sr.cost_of_call("together_ai/openai/gpt-oss-120b", Resp(1000, 0), litellm_cost=lambda r, model: 0.0)
-    assert zero["cost_source"] == "table" and zero["cost"] > 0  # litellm's 0.0 isn't trusted
+    assert zero["price_source"] == "table" and zero["cost"] > 0  # litellm's 0.0 isn't trusted
 
 
 def test_kimi_k26_table_price_charges_cached_input_at_the_full_rate():
     kimi = "together_ai/moonshotai/Kimi-K2.6"
     assert sr.table_price(kimi) == (1.20, 4.50)
     c = sr.cost_of_call(kimi, Resp(1_000_000, 1_000_000), litellm_cost=raises)
-    assert c["cost_source"] == "table" and c["cost"] == pytest.approx(1.20 + 4.50)
+    assert c["price_source"] == "table" and c["cost"] == pytest.approx(1.20 + 4.50)
 
     # 900k of the 1M prompt tokens were cache hits: still priced at $1.20/1M, not $0.20.
     cached = Resp(1_000_000, 0)
@@ -296,11 +299,11 @@ def test_kimi_k26_table_price_charges_cached_input_at_the_full_rate():
 
 def test_unknown_price_is_marked_unknown_not_zero(tmp_path):
     c = sr.cost_of_call("nobody/knows", Resp(10, 10), litellm_cost=raises)
-    assert c["cost_source"] == "unknown"
+    assert c["price_source"] == "unknown"
     plan = {"psf__requests-1": sr.TaskRun("Submitted", "d", traj(2, source="unknown", cost=0.0))}
     go(tmp_path, plan=plan, instances=INSTANCES[:1])
     r = rows(tmp_path)[0]
-    assert r["cost_usd"] is None and r["cost_source"] == "unknown"
+    assert r["cost_usd"] is None and r["price_source"] == "unknown"
     assert "(+1 unknown)" in sr.summarize([r])
 
 
@@ -380,3 +383,70 @@ def test_trajectory_metrics_handles_missing_usage():
     t["messages"][2]["extra"]["response"] = {}
     m = sr.trajectory_metrics(t)
     assert m["tokens_complete"] is False and m["tokens_in"] == 0
+
+
+# --------------------------------------------------------------------------- reproducible litellm prices
+
+
+def test_result_lines_record_litellm_version_and_price_sources(tmp_path):
+    sr.run_tasks(INSTANCES, "r1", "m", FakeRunner(PLAN), FakeDocker(), results_dir=tmp_path,
+                 litellm_version="1.0-parent")
+    by = {r["instance_id"]: r for r in rows(tmp_path)}
+    ok, err = by["psf__requests-1"], by["psf__requests-3"]
+    assert (ok["litellm_version"], ok["price_map_source"], ok["price_map_revision"]) == \
+        ("9.9.9", "local", "abc123")  # what the worker that priced the calls saw
+    assert ok["price_source"] == "litellm"
+    # The worker never reported (runner raised): fall back to the parent's version, source unknown.
+    assert (err["litellm_version"], err["price_map_source"]) == ("1.0-parent", None)
+    assert err["price_source"] == "no_calls"
+
+    mixed = {"psf__requests-1": sr.TaskRun("Submitted", "d", {"messages": [
+        {"extra": {"response": {"usage": {"prompt_tokens": 1, "completion_tokens": 1}},
+                   "cost": 0.1, "price_source": s}} for s in ("litellm", "table")]})}
+    sr.run_tasks(INSTANCES[:1], "r2", "m", FakeRunner(mixed), FakeDocker(), results_dir=tmp_path)
+    assert json.loads((tmp_path / "r2.jsonl").read_text())["price_source"] == "litellm+table"
+
+
+def test_importing_the_runner_makes_litellm_use_its_bundled_price_map():
+    """Fresh interpreter with the variable unset and a dead download URL: prices must come from
+    the copy bundled with the installed litellm, so nothing is fetched."""
+    from importlib.metadata import version
+
+    env = {k: v for k, v in os.environ.items() if k != "LITELLM_LOCAL_MODEL_COST_MAP"}
+    env["LITELLM_MODEL_COST_MAP_URL"] = "http://127.0.0.1:9/never.json"
+    code = ("import json, inferno.swebench_run as s, os; "
+            "print(json.dumps([s.litellm_info(), os.environ['LITELLM_LOCAL_MODEL_COST_MAP']]))")
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stderr[-2000:]
+    info, flag = json.loads(out.stdout.strip().splitlines()[-1])
+    assert flag == "True"
+    assert info["price_map_source"] == "local" and info["litellm_version"] == version("litellm")
+
+
+def test_worker_refuses_a_downloaded_price_map(tmp_path, monkeypatch):
+    monkeypatch.setattr(sr, "_load_api_keys", lambda: None)
+    monkeypatch.setattr(sr, "litellm_info", lambda: {"litellm_version": "x", "price_map_source": "remote",
+                                                     "price_map_revision": None})
+    called = []
+    import minisweagent.run.benchmarks.swebench as mini_sb
+    monkeypatch.setattr(mini_sb, "get_sb_environment", lambda *a: called.append(a))
+    spec = {"instance": instance(1), "model": "m", "limits": vars(sr.Limits()), "label": "l",
+            "traj_path": str(tmp_path / "t.json"), "result_path": str(tmp_path / "r.json")}
+    (tmp_path / "s.json").write_text(json.dumps(spec))
+    sr.worker(tmp_path / "s.json")
+    result = json.loads((tmp_path / "r.json").read_text())
+    assert result["exit_status"] == "RuntimeError" and "bundled" in result["error"]
+    assert result["litellm"]["price_map_source"] == "remote"
+    assert called == []  # no container was started
+
+
+def test_hard_timeout_keeps_the_litellm_info_the_worker_wrote_early(tmp_path):
+    cmd = write_fake_worker(tmp_path, (
+        "json.dump({'litellm': {'litellm_version': '1.2.3', 'price_map_source': 'local'}},"
+        " open(spec['result_path'], 'w'))\n"
+        "time.sleep(60)\n"
+    ))
+    run = sr.SubprocessTaskRunner(FakeDocker(), kill_grace=0, worker_cmd=cmd)(
+        instance(1), "m", sr.Limits(timeout_s=1), "lab", tmp_path / "w")
+    assert run.exit_status == "HardTimeout"
+    assert run.litellm == {"litellm_version": "1.2.3", "price_map_source": "local"}

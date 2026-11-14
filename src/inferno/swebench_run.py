@@ -23,20 +23,32 @@ For each task in data/swebench_25.json (see inferno.swebench_tasks):
 Restarting with the same --run-id skips tasks already in the JSONL file
 (including ones that ended in an error; pass --retry-errors to rerun those).
 
-Costs: litellm's price is used when it knows the model; otherwise our own
-table (PRICES_PER_MILLION below, plus inferno.client's). mini-swe-agent is set
+Costs: litellm's price is used when it knows the model (including its
+cached-input discounts); otherwise our own table (PRICES_PER_MILLION below, plus inferno.client's). mini-swe-agent is set
 to cost_tracking="ignore_errors" so a missing price doesn't crash it, and a
-call whose price neither source knows is marked cost_source "unknown" with
+call whose price neither source knows is marked price_source "unknown" with
 cost_usd null, never a silent 0. Without a known price the cost cap can't
 work, so the run refuses to start unless --allow-unknown-cost is given.
+
+For reproducible prices, this module sets LITELLM_LOCAL_MODEL_COST_MAP=True
+before litellm can be imported, in the runner and (since it runs this same
+module) in the worker. litellm then uses the price list bundled with its pinned
+version (uv.lock) instead of downloading the latest one at startup. The worker
+checks where litellm actually loaded its prices from and refuses to run the
+task otherwise. Each result line records litellm_version, price_map_source,
+price_map_revision and price_source (litellm / table / litellm+table / unknown).
 """
 
 from __future__ import annotations
 
+import os
+
+# Must run before anything imports litellm (mini-swe-agent does, on import).
+os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+
 import argparse
 import datetime as dt
 import json
-import os
 import signal
 import subprocess
 import sys
@@ -95,6 +107,21 @@ def litellm_knows_price(model: str) -> bool:
     return bool(info.get("input_cost_per_token")) and bool(info.get("output_cost_per_token"))
 
 
+def litellm_info() -> dict:
+    """litellm's version and where this process's litellm loaded its price map from."""
+    from importlib.metadata import version
+
+    import litellm  # noqa: F401 - loading litellm loads the price map
+    from litellm.litellm_core_utils.get_model_cost_map import get_model_cost_map_source_info
+
+    src = get_model_cost_map_source_info()
+    return {
+        "litellm_version": version("litellm"),
+        "price_map_source": src.get("source"),  # "local" = bundled with this litellm version
+        "price_map_revision": src.get("source_revision"),
+    }
+
+
 def price_known(model: str) -> bool:
     return table_price(model) is not None or litellm_knows_price(model)
 
@@ -108,7 +135,7 @@ def _usage(response) -> tuple[int | None, int | None]:
 
 
 def cost_of_call(model: str, response, litellm_cost: Callable | None = None) -> dict:
-    """{"cost": float, "cost_source": "litellm" | "table" | "unknown"} for one model response."""
+    """{"cost": float, "price_source": "litellm" | "table" | "unknown"} for one model response."""
     if litellm_cost is None:
         import litellm
 
@@ -116,16 +143,16 @@ def cost_of_call(model: str, response, litellm_cost: Callable | None = None) -> 
     try:
         cost = litellm_cost(response, model=model)
         if cost and cost > 0:
-            return {"cost": float(cost), "cost_source": "litellm"}
+            return {"cost": float(cost), "price_source": "litellm"}
     except Exception:  # noqa: BLE001 - unknown model / missing price
         pass
     price = table_price(model)
     tin, tout = _usage(response)
     if price is not None and tin is not None and tout is not None:
-        return {"cost": (tin * price[0] + tout * price[1]) / 1e6, "cost_source": "table"}
+        return {"cost": (tin * price[0] + tout * price[1]) / 1e6, "price_source": "table"}
     # mini-swe-agent adds extra["cost"] to its running total, so it must be a number;
-    # cost_source "unknown" makes the task's cost_usd null in our results.
-    return {"cost": 0.0, "cost_source": "unknown"}
+    # price_source "unknown" makes the task's cost_usd null in our results.
+    return {"cost": 0.0, "price_source": "unknown"}
 
 
 def _priced_model_class():
@@ -151,7 +178,7 @@ def __getattr__(name):  # lazy, so importing this module doesn't import litellm
 def trajectory_metrics(traj: dict | None) -> dict:
     """steps, tokens and cost from a mini-swe-agent trajectory (saved after every step)."""
     if not traj:
-        return dict(steps=0, tokens_in=0, tokens_out=0, cost_usd=0.0, cost_source="no_calls",
+        return dict(steps=0, tokens_in=0, tokens_out=0, cost_usd=0.0, price_source="no_calls",
                     tokens_complete=True)
     tin = tout = calls = 0
     cost, sources, complete = 0.0, set(), True
@@ -166,7 +193,7 @@ def trajectory_metrics(traj: dict | None) -> dict:
         tin += a or 0
         tout += b or 0
         cost += extra.get("cost", 0.0) or 0.0
-        sources.add(extra.get("cost_source", "unknown"))
+        sources.add(extra.get("price_source", "unknown"))
     steps = traj.get("info", {}).get("model_stats", {}).get("api_calls", calls)
     if calls == 0:
         cost_usd, source = 0.0, "no_calls"
@@ -175,7 +202,7 @@ def trajectory_metrics(traj: dict | None) -> dict:
     else:
         cost_usd, source = cost, "+".join(sorted(sources))
     return dict(steps=steps, tokens_in=tin, tokens_out=tout, cost_usd=cost_usd,
-                cost_source=source, tokens_complete=complete)
+                price_source=source, tokens_complete=complete)
 
 
 def classify(exit_status: str | None) -> str:
@@ -218,6 +245,7 @@ class TaskRun:
     error: str | None = None
     seconds: float = 0.0
     pull_seconds: float = 0.0
+    litellm: dict | None = None  # litellm_info() as seen by the worker
 
 
 class Docker(Protocol):
@@ -310,21 +338,22 @@ class SubprocessTaskRunner:
 
         traj = _read_json(Path(spec["traj_path"]))
         result = _read_json(Path(spec["result_path"])) or {}
+        lit = result.get("litellm")  # written early, so it survives a kill
         if killed:
             return TaskRun("HardTimeout", "", traj, f"worker killed after {seconds:.0f}s",
-                           seconds, pull_seconds)
-        if not result:
+                           seconds, pull_seconds, lit)
+        if result.get("exit_status") is None:
             return TaskRun("WorkerCrashed", "", traj, f"worker exited {proc.returncode} without a result",
-                           seconds, pull_seconds)
-        return TaskRun(result.get("exit_status") or "Unknown", result.get("submission") or "",
-                       traj, result.get("error"), seconds, pull_seconds)
+                           seconds, pull_seconds, lit)
+        return TaskRun(result["exit_status"], result.get("submission") or "",
+                       traj, result.get("error"), seconds, pull_seconds, lit)
 
 
-def _read_json(path: Path) -> dict | None:
+def _read_json(path: Path, default=None):
     try:
         return json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
-        return None
+        return default
 
 
 # --------------------------------------------------------------------------- worker (child process)
@@ -379,18 +408,27 @@ def worker(spec_path: Path) -> int:
     limits = Limits(**spec["limits"])
     config = build_config(spec["model"], limits, spec["label"], spec["traj_path"])
     config["agent"]["output_path"] = Path(spec["traj_path"])
+    result_path = Path(spec["result_path"])
     result: dict = {}
     env = None
     try:
+        lit = litellm_info()
+        result_path.write_text(json.dumps({"litellm": lit}))  # no exit_status yet: not finished
+        if lit["price_map_source"] != "local":
+            raise RuntimeError(f"litellm loaded its price map from {lit['price_map_source']!r}, not the "
+                               "copy bundled with its version; LITELLM_LOCAL_MODEL_COST_MAP was not honoured")
         env = get_sb_environment(config, spec["instance"])
         agent = DefaultAgent(get_model(config=config["model"]), env, **config["agent"])
         info = agent.run(spec["instance"]["problem_statement"])
-        result = {"exit_status": info.get("exit_status"), "submission": info.get("submission") or ""}
+        result = {"exit_status": info.get("exit_status"), "submission": info.get("submission") or "",
+                  "litellm": lit}
     except Exception as e:  # noqa: BLE001 - recorded as an error result
         result = {"exit_status": type(e).__name__, "submission": "",
                   "error": f"{e}\n{traceback.format_exc()[-3000:]}"}
     finally:
-        Path(spec["result_path"]).write_text(json.dumps(result))
+        if "litellm" not in result:
+            result["litellm"] = _read_json(result_path, {}).get("litellm")
+        result_path.write_text(json.dumps(result))
         if env is not None:
             env.cleanup()
     return 0
@@ -458,6 +496,7 @@ def run_tasks(
     retry_errors: bool = False,
     limit: int | None = None,
     mini_version: str | None = None,
+    litellm_version: str | None = None,
 ) -> BatchOutcome:
     run_file = results_dir / f"{run_id}.jsonl"
     preds_file = results_dir / f"{run_id}.preds.json"
@@ -490,6 +529,7 @@ def run_tasks(
             report = cleanup(docker, label, image)
 
         m = trajectory_metrics(run.trajectory)
+        lit = run.litellm or {}
         record = {
             "run_id": run_id,
             "instance_id": iid,
@@ -504,7 +544,7 @@ def run_tasks(
             "tokens_out": m["tokens_out"],
             "tokens_complete": m["tokens_complete"],
             "cost_usd": m["cost_usd"],
-            "cost_source": m["cost_source"],
+            "price_source": m["price_source"],  # litellm / table / litellm+table / unknown / no_calls
             "seconds": round(run.seconds, 1),
             "pull_seconds": round(run.pull_seconds, 1),
             "limits": vars(limits),
@@ -514,6 +554,9 @@ def run_tasks(
             "git_commit": git_commit,
             "git_dirty": git_dirty,
             "mini_swe_agent_version": mini_version,
+            "litellm_version": lit.get("litellm_version") or litellm_version,
+            "price_map_source": lit.get("price_map_source"),  # None: the worker never got that far
+            "price_map_revision": lit.get("price_map_revision"),
             "finished_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         }
         append_result(run_file, record)
@@ -590,6 +633,11 @@ def main(argv: list[str] | None = None) -> int:
 
     import minisweagent
 
+    parent_litellm = litellm_info()
+    if parent_litellm["price_map_source"] != "local":
+        print(f"error: litellm loaded a {parent_litellm['price_map_source']!r} price map, not the bundled one",
+              file=sys.stderr)
+        return 2
     commit, dirty = git_info()
     if dirty:
         print(f"warning: uncommitted changes; results will be tagged {commit} but may not match it",
@@ -597,13 +645,15 @@ def main(argv: list[str] | None = None) -> int:
     limits = Limits(args.cost_cap, args.step_limit, args.timeout)
     instances = load_instances(args.tasks)
     print(f"Run {args.run_id} | {args.model} | {len(instances)} tasks | cap ${limits.cost_cap}, "
-          f"{limits.step_limit} steps, {limits.timeout_s}s | commit {commit}")
+          f"{limits.step_limit} steps, {limits.timeout_s}s | commit {commit} | "
+          f"litellm {parent_litellm['litellm_version']} (bundled prices)")
 
     docker = DockerCli()
     outcome = run_tasks(
         instances, args.run_id, args.model, SubprocessTaskRunner(docker, args.pull_timeout), docker,
         limits, git_commit=commit, git_dirty=dirty, retry_errors=args.retry_errors,
         limit=args.limit, mini_version=minisweagent.__version__,
+        litellm_version=parent_litellm["litellm_version"],
     )
     print("\n" + summarize(load_results(run_file)))
     print(f"Predictions: {RESULTS_DIR / f'{args.run_id}.preds.json'}")
