@@ -148,7 +148,7 @@ def test_one_line_per_task_with_all_fields(tmp_path):
     ok, lim, err = by["psf__requests-1"], by["psf__requests-2"], by["psf__requests-3"]
 
     assert (ok["outcome"], ok["exit_status"], ok["patch"]) == ("submitted", "Submitted", "diff --git a/x b/x\n")
-    assert (ok["steps"], ok["tokens_in"], ok["tokens_out"]) == (3, 3000, 300)
+    assert (ok["steps"], ok["tokens_in"], ok["tokens_out"], ok["tokens_cached"]) == (3, 3000, 300, 0)
     assert ok["cost_usd"] == pytest.approx(0.03) and ok["price_source"] == "litellm"
     assert ok["seconds"] == 12.0 and ok["limit_hit"] is None
 
@@ -259,6 +259,44 @@ def test_summary(tmp_path):
     text = sr.summarize(sr.load_results(tmp_path / "r1.jsonl"))
     assert "Submitted:        1" in text and "Limit hit:        1" in text and "Error:            1" in text
     assert "Tokens in / out:  53000 / 5300" in text
+    assert "Tokens cached:    0 (0% of input)" in text
+
+
+def traj_with_cached(per_call):
+    """A trajectory whose calls report these cached_tokens values (None: field absent)."""
+    t = traj(len(per_call))
+    calls = [m for m in t["messages"] if "response" in (m.get("extra") or {})]
+    for msg, c in zip(calls, per_call):
+        if c is not None:
+            msg["extra"]["response"]["usage"]["prompt_tokens_details"] = {"cached_tokens": c}
+    return t
+
+
+def test_tokens_cached_sums_reported_cache_hits_across_calls(tmp_path):
+    plan = {
+        "psf__requests-1": sr.TaskRun("Submitted", "d", traj_with_cached([0, 600, None, 300])),
+        "psf__requests-2": sr.TaskRun("LimitsExceeded", "", traj_with_cached([None, None])),
+        "psf__requests-3": RuntimeError("no calls made"),
+    }
+    go(tmp_path, plan=plan)
+    by = {r["instance_id"]: r["tokens_cached"] for r in rows(tmp_path)}
+    assert by == {"psf__requests-1": 900, "psf__requests-2": 0, "psf__requests-3": 0}
+
+    text = sr.summarize(sr.load_results(tmp_path / "r1.jsonl"))
+    assert "Tokens cached:    900 (15% of input)" in text  # 900 of 6 calls x 1000 prompt tokens
+
+
+def test_tokens_cached_uses_the_same_rules_as_pricing():
+    # Bad values count as 0, exactly as in _cached_tokens().
+    t = traj_with_cached([250, "lots", -5, True])
+    assert sr.trajectory_metrics(t)["tokens_cached"] == 250
+    assert sr.trajectory_metrics(None)["tokens_cached"] == 0
+
+
+def test_summary_notes_lines_written_before_tokens_cached_existed():
+    base = dict(outcome="submitted", patch="", tokens_in=100, tokens_out=1, cost_usd=0.0)
+    rows_ = [dict(base, instance_id="a", tokens_cached=40), dict(base, instance_id="b")]
+    assert "Tokens cached:    40 (20% of input) (+1 task(s) not recorded)" in sr.summarize(rows_)
 
 
 # --------------------------------------------------------------------------- cost

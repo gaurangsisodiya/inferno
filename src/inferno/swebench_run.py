@@ -265,9 +265,9 @@ def __getattr__(name):  # lazy, so importing this module doesn't import litellm
 def trajectory_metrics(traj: dict | None) -> dict:
     """steps, tokens and cost from a mini-swe-agent trajectory (saved after every step)."""
     if not traj:
-        return dict(steps=0, tokens_in=0, tokens_out=0, cost_usd=0.0, price_source="no_calls",
-                    tokens_complete=True)
-    tin = tout = calls = 0
+        return dict(steps=0, tokens_in=0, tokens_out=0, tokens_cached=0, cost_usd=0.0,
+                    price_source="no_calls", tokens_complete=True)
+    tin = tout = cached = calls = 0
     cost, sources, complete = 0.0, set(), True
     for msg in traj.get("messages", []):
         extra = msg.get("extra") or {}
@@ -279,6 +279,7 @@ def trajectory_metrics(traj: dict | None) -> dict:
             complete = False
         tin += a or 0
         tout += b or 0
+        cached += _cached_tokens(extra["response"])  # 0 when the response doesn't report it
         cost += extra.get("cost", 0.0) or 0.0
         sources.add(extra.get("price_source", "unknown"))
     steps = traj.get("info", {}).get("model_stats", {}).get("api_calls", calls)
@@ -288,7 +289,7 @@ def trajectory_metrics(traj: dict | None) -> dict:
         cost_usd, source = None, "unknown"
     else:
         cost_usd, source = cost, "+".join(sorted(sources))
-    return dict(steps=steps, tokens_in=tin, tokens_out=tout, cost_usd=cost_usd,
+    return dict(steps=steps, tokens_in=tin, tokens_out=tout, tokens_cached=cached, cost_usd=cost_usd,
                 price_source=source, tokens_complete=complete)
 
 
@@ -641,6 +642,7 @@ def run_tasks(
             "steps": m["steps"],
             "tokens_in": m["tokens_in"],
             "tokens_out": m["tokens_out"],
+            "tokens_cached": m["tokens_cached"],  # part of tokens_in reported as cache hits
             "tokens_complete": m["tokens_complete"],
             "cost_usd": m["cost_usd"],
             "price_source": m["price_source"],  # litellm / table / litellm+table / unknown / no_calls
@@ -679,13 +681,19 @@ def summarize(records: list[dict]) -> str:
     costs = [r["cost_usd"] for r in latest]
     known = [c for c in costs if c is not None]
     cost = f"${sum(known):.4f}" + (f" (+{len(costs) - len(known)} unknown)" if len(known) < n else "")
+    tokens_in = sum(r["tokens_in"] for r in latest)
+    cached = sum(r.get("tokens_cached") or 0 for r in latest)
+    share = f" ({cached / tokens_in:.0%} of input)" if tokens_in else ""
+    no_field = sum("tokens_cached" not in r for r in latest)  # lines written before the field existed
+    cached_line = f"{cached}{share}" + (f" (+{no_field} task(s) not recorded)" if no_field else "")
     return "\n".join([
         f"Tasks recorded:   {n}",
         f"Submitted:        {by['submitted']}",
         f"Limit hit:        {by['limit']}",
         f"Error:            {by['error']}",
         f"Non-empty patch:  {sum(bool(r['patch']) for r in latest)}",
-        f"Tokens in / out:  {sum(r['tokens_in'] for r in latest)} / {sum(r['tokens_out'] for r in latest)}",
+        f"Tokens in / out:  {tokens_in} / {sum(r['tokens_out'] for r in latest)}",
+        f"Tokens cached:    {cached_line}",
         f"Cost:             {cost}",
     ])
 
