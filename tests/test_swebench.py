@@ -282,6 +282,18 @@ def test_cost_falls_back_to_our_table():
     assert zero["cost_source"] == "table" and zero["cost"] > 0  # litellm's 0.0 isn't trusted
 
 
+def test_kimi_k26_table_price_charges_cached_input_at_the_full_rate():
+    kimi = "together_ai/moonshotai/Kimi-K2.6"
+    assert sr.table_price(kimi) == (1.20, 4.50)
+    c = sr.cost_of_call(kimi, Resp(1_000_000, 1_000_000), litellm_cost=raises)
+    assert c["cost_source"] == "table" and c["cost"] == pytest.approx(1.20 + 4.50)
+
+    # 900k of the 1M prompt tokens were cache hits: still priced at $1.20/1M, not $0.20.
+    cached = Resp(1_000_000, 0)
+    cached.usage.prompt_tokens_details = {"cached_tokens": 900_000}
+    assert sr.cost_of_call(kimi, cached, litellm_cost=raises)["cost"] == pytest.approx(1.20)
+
+
 def test_unknown_price_is_marked_unknown_not_zero(tmp_path):
     c = sr.cost_of_call("nobody/knows", Resp(10, 10), litellm_cost=raises)
     assert c["cost_source"] == "unknown"

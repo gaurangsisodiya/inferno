@@ -64,8 +64,12 @@ DEFAULT_PULL_TIMEOUT_S = 30 * 60
 
 # Our own prices (USD per 1M tokens, input/output), keyed by litellm model name.
 # Only used when litellm doesn't know the price. Last checked 2026-11-15.
+# The fallback prices every prompt token at the input rate: it doesn't look at
+# cached tokens, so a cached-input discount is never applied (conservative for
+# the cost cap). Kimi-K2.6 lists $0.20/1M cached input on Together; unused here.
 PRICES_PER_MILLION: dict[str, tuple[float, float]] = {
     "together_ai/openai/gpt-oss-120b": (0.15, 0.60),
+    "together_ai/moonshotai/Kimi-K2.6": (1.20, 4.50),  # Together /v1/models, 2026-11-15
 }
 LIMIT_STATUSES = {"LimitsExceeded", "TimeExceeded", "HardTimeout"}
 
