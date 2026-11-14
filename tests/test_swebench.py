@@ -360,9 +360,9 @@ def test_build_config_uses_backticks_config_with_our_limits():
     cfg = sr.build_config("together_ai/openai/gpt-oss-120b", sr.Limits(0.25, 7, 60), "lab", "/t.json")
     mini = get_config_from_spec(builtin_config_dir / "benchmarks" / "swebench_backticks.yaml")
     assert sr.AGENT_CONFIG == "swebench_backticks" and sr.MODEL_CLASS == "litellm_textbased"
-    assert cfg["agent"]["instance_template"] == mini["agent"]["instance_template"]  # mini's prompt
+    assert cfg["agent"]["instance_template"].startswith(mini["agent"]["instance_template"].rstrip())
     assert "mswea_bash_command" in cfg["agent"]["system_template"]
-    assert cfg["model"]["format_error_template"] == mini["model"]["format_error_template"]
+    assert cfg["model"]["format_error_template"].startswith(mini["model"]["format_error_template"].rstrip())
     assert cfg["model"]["model_class"] == sr.MODEL_CLASS_PATH
     assert "parallel_tool_calls" not in cfg["model"].get("model_kwargs", {})
     assert cfg["agent"]["step_limit"] == 7 and cfg["agent"]["cost_limit"] == 0.25
@@ -379,16 +379,93 @@ def test_build_config_uses_backticks_config_with_our_limits():
 def test_result_lines_record_the_harness(tmp_path):
     go(tmp_path)
     for r in rows(tmp_path):
+        assert r["harness"] == "backticks-v2"
         assert (r["agent_config"], r["model_class"]) == ("swebench_backticks", "litellm_textbased")
 
 
-def test_refuses_to_mix_harnesses_in_one_run_file(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("old", [
+    {},  # tool-calling run: no harness fields at all
+    {"agent_config": "swebench_backticks", "model_class": "litellm_textbased"},  # backticks-v1
+    {"harness": "backticks-v1"},
+])
+def test_refuses_to_mix_harnesses_in_one_run_file(tmp_path, monkeypatch, capsys, old):
     monkeypatch.setattr(sr, "RESULTS_DIR", tmp_path)
-    old = {"instance_id": "a", "model": "together_ai/openai/gpt-oss-120b", "outcome": "error"}
-    (tmp_path / "old.jsonl").write_text(json.dumps(old) + "\n")  # tool-calling run: no harness fields
+    line = {"instance_id": "a", "model": "together_ai/openai/gpt-oss-120b", "outcome": "error", **old}
+    (tmp_path / "old.jsonl").write_text(json.dumps(line) + "\n")
     with pytest.raises(SystemExit):
         sr.main(["--model", "together_ai/openai/gpt-oss-120b", "--run-id", "old"])
     assert "another harness" in capsys.readouterr().err
+
+
+def test_harness_of_old_lines():
+    assert sr.harness_of({}) == "toolcall-v1"
+    assert sr.harness_of({"agent_config": "swebench_backticks"}) == "backticks-v1"
+    assert sr.harness_of({"harness": "backticks-v2"}) == "backticks-v2"
+
+
+def mini_backticks_config():
+    from minisweagent.config import builtin_config_dir, get_config_from_spec
+
+    return get_config_from_spec(builtin_config_dir / "benchmarks" / "swebench_backticks.yaml")
+
+
+def test_command_format_rules_are_appended_after_minis_text():
+    mini = mini_backticks_config()
+    cfg = sr.build_config("m", sr.Limits(), "lab")
+    for got, orig in [(cfg["agent"]["instance_template"], mini["agent"]["instance_template"]),
+                      (cfg["model"]["format_error_template"], mini["model"]["format_error_template"])]:
+        assert got.startswith(orig.rstrip("\n"))  # mini's original text first, unchanged
+        assert got.endswith(sr.COMMAND_FORMAT_RULES)
+    rules = sr.COMMAND_FORMAT_RULES
+    for must in ["real line breaks", "\\n", '\\"', "JSON", "closing ``` on its own line",
+                 "no apply_patch", "sed -i", "heredoc"]:
+        assert must in rules, must
+    assert cfg["agent"]["max_consecutive_format_errors"] == 5
+
+
+def test_rules_are_plain_text_for_jinja_and_their_examples_parse():
+    from jinja2 import StrictUndefined, Template
+
+    rules = sr.COMMAND_FORMAT_RULES
+    assert "{{" not in rules and "{%" not in rules and "{#" not in rules
+    assert Template(rules, undefined=StrictUndefined).render().rstrip() == rules.rstrip()
+    # Each example block is one valid action under mini's own regex.
+    from minisweagent.models.litellm_textbased_model import LitellmTextbasedModelConfig
+    import re
+    blocks = re.findall(LitellmTextbasedModelConfig.model_fields["action_regex"].default, rules, re.DOTALL)
+    assert [b.split("\n")[0] for b in blocks] == ["sed -i 's/old text/new text/' path/to/file.py",
+                                                  "python - <<'EOF'"]
+
+
+def test_format_error_message_shows_minis_text_then_the_rules():
+    from minisweagent.exceptions import FormatError
+    from minisweagent.models import get_model
+
+    model = get_model(config=sr.build_config("m", sr.Limits(), "lab")["model"])
+    escaped = 'THOUGHT: x\n\n```mswea_bash_command\napply_patch <<\'PATCH\'\\n*** Begin Patch\\nPATCH\\n"]}'
+    with pytest.raises(FormatError) as e:
+        model._parse_actions(TextResp(escaped))
+    text = e.value.messages[0]["content"]
+    assert text.index("Expected exactly 1 action, found 0.") < text.index("## Command format (strict)")
+    assert "Please always provide EXACTLY ONE action in triple backticks, found 0 actions." in text
+
+
+def test_instance_template_renders_in_a_real_agent():
+    """DefaultAgent renders the template with StrictUndefined; our addition must not break that."""
+    from minisweagent.agents.default import DefaultAgent
+    from minisweagent.models import get_model
+
+    cfg = sr.build_config("m", sr.Limits(), "lab")
+
+    class FakeEnv:
+        def get_template_vars(self, **kw):
+            return {"cwd": "/testbed"}
+
+    agent = DefaultAgent(get_model(config=cfg["model"]), FakeEnv(), **cfg["agent"])
+    agent.extra_template_vars["task"] = "the issue"
+    text = agent._render_template(agent.config.instance_template)
+    assert "the issue" in text and text.rstrip().endswith("EOF\n```")
+    assert agent.config.max_consecutive_format_errors == 5
 
 
 def test_parser_refuses_unknown_price(capsys):

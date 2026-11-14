@@ -78,6 +78,51 @@ AGENT_CONFIG = "swebench_backticks"
 MODEL_CLASS = "litellm_textbased"  # PricedTextbasedModel below extends this class
 MODEL_CLASS_PATH = "inferno.swebench_run.PricedTextbasedModel"
 
+# Bump whenever the prompt/config overrides below change, so results from different
+# harnesses can't be mixed in one run file. Recorded as "harness" in every result line.
+#   toolcall-v1   swebench.yaml + litellm (lines without agent_config)
+#   backticks-v1  swebench_backticks.yaml + litellm_textbased, mini's prompts unchanged
+#   backticks-v2  + COMMAND_FORMAT_RULES in the instance and format-error templates,
+#                 max_consecutive_format_errors 5
+HARNESS = "backticks-v2"
+MAX_CONSECUTIVE_FORMAT_ERRORS = 5  # mini's default is 3
+
+# Appended to mini's instance template and format-error message. gpt-oss wrote commands
+# JSON-escaped like tool-call arguments (literal \n and \", trailing "]}), so the block
+# never closed, accepted greps searched for quoted text, and it called its own
+# apply_patch tool, which doesn't exist in the container. (smoke-swe-text, 2026-11-15.)
+# Plain text, no Jinja syntax: both templates are rendered by Jinja.
+COMMAND_FORMAT_RULES = """\
+## Command format (strict)
+
+- Write the command inside the block exactly as you would type it in a terminal.
+- Use real line breaks. Never write \\n or \\" escape sequences, and never wrap the
+  command in JSON or quotes.
+- Put the closing ``` on its own line, directly after the last line of the command.
+- There is no apply_patch tool. Edit files with sed -i, or with a python or cat heredoc.
+
+Two examples. Each is the single block of a separate reply; never put two blocks in one reply.
+
+```mswea_bash_command
+sed -i 's/old text/new text/' path/to/file.py
+```
+
+```mswea_bash_command
+python - <<'EOF'
+from pathlib import Path
+p = Path("path/to/file.py")
+p.write_text(p.read_text().replace("old text", "new text"))
+EOF
+```
+"""
+
+
+def harness_of(record: dict) -> str:
+    """The harness that produced a result line, including lines written before "harness" existed."""
+    if "harness" in record:
+        return record["harness"]
+    return "backticks-v1" if record.get("agent_config") == "swebench_backticks" else "toolcall-v1"
+
 DEFAULT_COST_CAP = 0.50
 DEFAULT_STEP_LIMIT = 50
 DEFAULT_TIMEOUT_S = 20 * 60
@@ -375,12 +420,20 @@ def _read_json(path: Path, default=None):
 # --------------------------------------------------------------------------- worker (child process)
 
 def build_config(model: str, limits: Limits, label: str, traj_path: str | None = None) -> dict:
-    """mini-swe-agent's AGENT_CONFIG with our model class, limits and container label merged in."""
+    """mini-swe-agent's AGENT_CONFIG with our model class, limits, container label and
+    command-format rules merged in (HARNESS)."""
     from minisweagent.config import builtin_config_dir, get_config_from_spec
     from minisweagent.utils.serialize import recursive_merge
 
+    base = get_config_from_spec(builtin_config_dir / "benchmarks" / f"{AGENT_CONFIG}.yaml")
+
+    def plus_rules(template: str) -> str:  # mini's text first, then ours
+        return template.rstrip("\n") + "\n\n" + COMMAND_FORMAT_RULES
+
     ours = {
         "agent": {
+            "instance_template": plus_rules(base["agent"]["instance_template"]),
+            "max_consecutive_format_errors": MAX_CONSECUTIVE_FORMAT_ERRORS,
             "step_limit": limits.step_limit,
             "cost_limit": limits.cost_cap,
             "wall_time_limit_seconds": limits.timeout_s,
@@ -390,6 +443,7 @@ def build_config(model: str, limits: Limits, label: str, traj_path: str | None =
             "model_name": model,
             "model_class": MODEL_CLASS_PATH,
             "cost_tracking": "ignore_errors",  # we price calls ourselves; see cost_of_call
+            "format_error_template": plus_rules(base["model"]["format_error_template"]),
         },
         "environment": {
             "environment_class": "docker",
@@ -404,7 +458,6 @@ def build_config(model: str, limits: Limits, label: str, traj_path: str | None =
             "env": {"BASH_ENV": "/root/.bashrc"},
         },
     }
-    base = get_config_from_spec(builtin_config_dir / "benchmarks" / f"{AGENT_CONFIG}.yaml")
     return recursive_merge(base, ours)
 
 
@@ -573,6 +626,7 @@ def run_tasks(
             "error": run.error,
             "git_commit": git_commit,
             "git_dirty": git_dirty,
+            "harness": HARNESS,
             "agent_config": AGENT_CONFIG,
             "model_class": MODEL_CLASS,
             "mini_swe_agent_version": mini_version,
@@ -653,9 +707,8 @@ def main(argv: list[str] | None = None) -> int:
     models = {r["model"] for r in existing}
     if models - {args.model}:
         p.error(f"{run_file.name} already has results for {sorted(models)}; use another --run-id")
-    # Lines without these fields come from the earlier tool-calling harness (swebench.yaml).
-    harnesses = {(r.get("agent_config", "swebench"), r.get("model_class", "litellm")) for r in existing}
-    if harnesses - {(AGENT_CONFIG, MODEL_CLASS)}:
+    harnesses = {harness_of(r) for r in existing}
+    if harnesses - {HARNESS}:
         p.error(f"{run_file.name} has results from another harness {sorted(harnesses)}; use another --run-id")
 
     import minisweagent
@@ -673,7 +726,7 @@ def main(argv: list[str] | None = None) -> int:
     instances = load_instances(args.tasks)
     print(f"Run {args.run_id} | {args.model} | {len(instances)} tasks | cap ${limits.cost_cap}, "
           f"{limits.step_limit} steps, {limits.timeout_s}s | commit {commit} | "
-          f"litellm {parent_litellm['litellm_version']} (bundled prices) | {AGENT_CONFIG} + {MODEL_CLASS}")
+          f"litellm {parent_litellm['litellm_version']} (bundled prices) | harness {HARNESS}")
 
     docker = DockerCli()
     outcome = run_tasks(

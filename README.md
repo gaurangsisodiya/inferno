@@ -138,8 +138,12 @@ uv run python -m inferno.swebench_run --model together_ai/openai/gpt-oss-120b --
 The harness is mini-swe-agent's `swebench_backticks.yaml` config with the
 `litellm_textbased` model class: one ```` ```mswea_bash_command ```` block per
 reply, no tool calling (gpt-oss on Together produced invalid parallel tool
-calls under the default `swebench.yaml`). Each result line records
-`agent_config` and `model_class`.
+calls under the default `swebench.yaml`). On top of mini's prompt we append
+strict command-format rules (real line breaks, no `\n`/`\"` escapes or JSON,
+closing fence on its own line, no `apply_patch`) to the instance and
+format-error templates, and allow 5 consecutive format errors instead of 3.
+Each result line records `harness` (currently `backticks-v2`), `agent_config`
+and `model_class`; a run file never mixes harnesses.
 
 Tasks run one at a time in mini-swe-agent's Docker environment, with a
 per-task cost cap (`--cost-cap`, default $0.50), step limit (`--step-limit`,
