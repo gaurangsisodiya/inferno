@@ -126,6 +126,31 @@ pass/fail, never the reference code.
 
 Run the agent's own tests with `uv run pytest`.
 
+## SWE-bench Verified (mini-swe-agent)
+
+`data/swebench_25.json` holds a fixed sample of 25 Verified tasks (seed 42,
+at most 8 per repo), made by `uv run python -m inferno.swebench_tasks`.
+
+```bash
+uv run python -m inferno.swebench_run --model together_ai/openai/gpt-oss-120b --run-id gptoss-swe-v1
+```
+
+Tasks run one at a time in mini-swe-agent's Docker environment, with a
+per-task cost cap (`--cost-cap`, default $0.50), step limit (`--step-limit`,
+50) and wall-clock timeout (`--timeout`, 1200 s). After every task, including
+errors and timeouts, its containers are removed and its image is `docker rmi`'d,
+so only one task image is on disk at a time. Results:
+
+* `results/swebench/<run_id>.jsonl`: one line per task (exit status,
+  `outcome` = submitted / limit / error, patch, steps, tokens, cost, seconds,
+  git commit). Re-running skips finished tasks; `--retry-errors` reruns errors.
+* `results/swebench/<run_id>.preds.json`: predictions for `swebench eval`.
+* `results/swebench/<run_id>/`: each task's mini-swe-agent trajectory.
+
+Cost comes from litellm's price or, failing that, our own table; a call
+with no known price makes the task's `cost_usd` null (never a silent 0), and
+the run refuses to start for such a model unless `--allow-unknown-cost`.
+
 ## Running the QuixBugs tests
 
 Run the tests from inside `data/quixbugs`. Its `conftest.py` puts that directory on `sys.path`,
