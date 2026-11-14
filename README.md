@@ -146,7 +146,7 @@ Each result line records `harness` (currently `backticks-v2`), `agent_config`
 and `model_class`; a run file never mixes harnesses.
 
 Tasks run one at a time in mini-swe-agent's Docker environment, with a
-per-task cost cap (`--cost-cap`, default $0.50), step limit (`--step-limit`,
+per-task cost cap (`--cost-cap`, default $1.50), step limit (`--step-limit`,
 50) and wall-clock timeout (`--timeout`, 1200 s). After every task, including
 errors and timeouts, its containers are removed and its image is `docker rmi`'d,
 so only one task image is on disk at a time. Results:

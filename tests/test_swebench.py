@@ -159,7 +159,7 @@ def test_one_line_per_task_with_all_fields(tmp_path):
     for r in by.values():
         assert r["git_commit"] == "abc" and r["git_dirty"] is False
         assert r["model"] == "together_ai/openai/gpt-oss-120b" and r["run_id"] == "r1"
-        assert r["limits"] == {"cost_cap": 0.5, "step_limit": 50, "timeout_s": 1200}
+        assert r["limits"] == {"cost_cap": 1.5, "step_limit": 50, "timeout_s": 1200}
         assert r["image"] == "docker.io/swebench/sweb.eval.x86_64." + r["instance_id"].replace("__", "_1776_")\
             + ":latest"
 
@@ -287,7 +287,7 @@ def test_cost_falls_back_to_our_table():
 
 def test_kimi_k26_table_price_charges_cached_input_at_the_full_rate():
     kimi = "together_ai/moonshotai/Kimi-K2.6"
-    assert sr.table_price(kimi) == (1.20, 4.50)
+    assert sr.table_price(kimi) == sr.Price(1.20, 4.50, cached_input=None)
     c = sr.cost_of_call(kimi, Resp(1_000_000, 1_000_000), litellm_cost=raises)
     assert c["price_source"] == "table" and c["cost"] == pytest.approx(1.20 + 4.50)
 
@@ -295,6 +295,63 @@ def test_kimi_k26_table_price_charges_cached_input_at_the_full_rate():
     cached = Resp(1_000_000, 0)
     cached.usage.prompt_tokens_details = {"cached_tokens": 900_000}
     assert sr.cost_of_call(kimi, cached, litellm_cost=raises)["cost"] == pytest.approx(1.20)
+
+
+KIMI_K31 = "together_ai/moonshotai/Kimi-K3.1-Pro"
+
+
+def with_cached(resp, cached):
+    resp.usage.prompt_tokens_details = {"cached_tokens": cached}
+    return resp
+
+
+def test_kimi_k31_pro_is_in_the_table_with_a_cached_rate():
+    assert sr.table_price(KIMI_K31) == sr.Price(2.00, 10.00, cached_input=0.20)
+    assert sr.price_known(KIMI_K31)
+
+
+def test_kimi_k31_pro_without_cache_hits_charges_full_input():
+    c = sr.cost_of_call(KIMI_K31, Resp(1_000_000, 1_000_000), litellm_cost=raises)
+    assert c == {"cost": pytest.approx(2.00 + 10.00), "price_source": "table"}
+
+
+def test_kimi_k31_pro_charges_cached_tokens_at_the_cached_rate():
+    # 1M prompt tokens of which 900k cached: 100k x $2.00 + 900k x $0.20, plus 1M output x $10.
+    c = sr.cost_of_call(KIMI_K31, with_cached(Resp(1_000_000, 1_000_000), 900_000), litellm_cost=raises)
+    assert c["cost"] == pytest.approx(0.20 + 0.18 + 10.00) and c["price_source"] == "table"
+
+
+def test_cached_tokens_read_from_a_dict_response_like_the_trajectory():
+    resp = {"usage": {"prompt_tokens": 1_000_000, "completion_tokens": 0,
+                      "prompt_tokens_details": {"cached_tokens": 500_000}}}
+    assert sr.cost_of_call(KIMI_K31, resp, litellm_cost=raises)["cost"] == pytest.approx(1.00 + 0.10)
+
+
+@pytest.mark.parametrize("details", [None, {}, {"cached_tokens": None}, {"cached_tokens": "lots"},
+                                     {"cached_tokens": -5}, {"cached_tokens": True}])
+def test_missing_or_bad_cached_counts_mean_full_price(details):
+    resp = Resp(1_000_000, 0)
+    resp.usage.prompt_tokens_details = details
+    assert sr.cost_of_call(KIMI_K31, resp, litellm_cost=raises)["cost"] == pytest.approx(2.00)
+
+
+def test_cached_count_above_prompt_tokens_is_clamped():
+    c = sr.cost_of_call(KIMI_K31, with_cached(Resp(1_000, 0), 5_000), litellm_cost=raises)
+    assert c["cost"] == pytest.approx(1_000 * 0.20 / 1e6)  # never negative full-rate tokens
+
+
+def test_litellm_still_wins_over_the_cached_table_rate():
+    c = sr.cost_of_call(KIMI_K31, with_cached(Resp(1_000_000, 0), 900_000), litellm_cost=lambda r, model: 0.42)
+    assert c == {"cost": 0.42, "price_source": "litellm"}
+
+
+def test_inferno_client_prices_still_work_as_fallback(monkeypatch):
+    monkeypatch.setitem(sr.inferno_client.PRICES_PER_MILLION, "acme/model-x", (1.0, 2.0))
+    assert sr.table_price("together_ai/acme/model-x") == sr.Price(1.0, 2.0, None)
+
+
+def test_default_cost_cap_is_150():
+    assert sr.DEFAULT_COST_CAP == 1.50 and sr.Limits().cost_cap == 1.50
 
 
 def test_unknown_price_is_marked_unknown_not_zero(tmp_path):
@@ -308,7 +365,7 @@ def test_unknown_price_is_marked_unknown_not_zero(tmp_path):
 
 
 def test_price_known():
-    assert sr.table_price("together_ai/openai/gpt-oss-120b") == (0.15, 0.60)
+    assert sr.table_price("together_ai/openai/gpt-oss-120b") == sr.Price(0.15, 0.60)
     assert not sr.price_known("nobody/knows-this-model-xyz")
 
 

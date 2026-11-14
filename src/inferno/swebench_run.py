@@ -60,7 +60,7 @@ import traceback
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable, Protocol
+from typing import Callable, Iterable, NamedTuple, Protocol
 
 from inferno import client as inferno_client
 from inferno.client import REPO_ROOT
@@ -123,33 +123,44 @@ def harness_of(record: dict) -> str:
         return record["harness"]
     return "backticks-v1" if record.get("agent_config") == "swebench_backticks" else "toolcall-v1"
 
-DEFAULT_COST_CAP = 0.50
+DEFAULT_COST_CAP = 1.50
 DEFAULT_STEP_LIMIT = 50
 DEFAULT_TIMEOUT_S = 20 * 60
 KILL_GRACE_S = 120  # after the timeout: lets the last model call/command finish before SIGKILL
 DEFAULT_PULL_TIMEOUT_S = 30 * 60
 
-# Our own prices (USD per 1M tokens, input/output), keyed by litellm model name.
-# Only used when litellm doesn't know the price. Last checked 2026-11-15.
-# The fallback prices every prompt token at the input rate: it doesn't look at
-# cached tokens, so a cached-input discount is never applied (conservative for
-# the cost cap). Kimi-K2.6 lists $0.20/1M cached input on Together; unused here.
-PRICES_PER_MILLION: dict[str, tuple[float, float]] = {
-    "together_ai/openai/gpt-oss-120b": (0.15, 0.60),
-    "together_ai/moonshotai/Kimi-K2.6": (1.20, 4.50),  # Together /v1/models, 2026-11-15
+class Price(NamedTuple):
+    """USD per 1M tokens."""
+
+    input: float
+    output: float
+    # Rate for prompt tokens the response reports as cache hits. None: charge them at
+    # the full input rate (conservative for the cost cap).
+    cached_input: float | None = None
+
+
+# Our own prices, keyed by litellm model name. Only used when litellm doesn't know
+# the price (litellm applies its own cached-input rates). Last checked 2026-11-15.
+PRICES_PER_MILLION: dict[str, Price] = {
+    "together_ai/openai/gpt-oss-120b": Price(0.15, 0.60),
+    # Together lists $0.20/1M cached input for Kimi-K2.6; deliberately left out, so all
+    # of its input is charged at $1.20 when this table prices it.
+    "together_ai/moonshotai/Kimi-K2.6": Price(1.20, 4.50),  # Together /v1/models, 2026-11-15
+    "together_ai/moonshotai/Kimi-K3.1-Pro": Price(2.00, 10.00, cached_input=0.20),  # same source
 }
 LIMIT_STATUSES = {"LimitsExceeded", "TimeExceeded", "HardTimeout"}
 
 
 # --------------------------------------------------------------------------- prices
 
-def table_price(model: str) -> tuple[float, float] | None:
-    """(input, output) USD per 1M tokens from our tables, or None."""
+def table_price(model: str) -> Price | None:
+    """Our price for `model`, or None."""
     if model in PRICES_PER_MILLION:
         return PRICES_PER_MILLION[model]
-    # inferno.client keys models without the litellm provider prefix.
+    # inferno.client keys models without the litellm provider prefix, as (input, output).
     bare = model.split("/", 1)[1] if model.startswith("together_ai/") else model
-    return inferno_client.PRICES_PER_MILLION.get(bare)
+    pair = inferno_client.PRICES_PER_MILLION.get(bare)
+    return Price(*pair) if pair is not None else None
 
 
 def litellm_knows_price(model: str) -> bool:
@@ -189,6 +200,18 @@ def _usage(response) -> tuple[int | None, int | None]:
     return get("prompt_tokens"), get("completion_tokens")
 
 
+def _cached_tokens(response) -> int:
+    """Prompt tokens reported as cache hits (OpenAI/litellm usage.prompt_tokens_details.cached_tokens).
+
+    These are a subset of prompt_tokens. Missing or unreadable counts as 0, i.e. full price.
+    """
+    usage = response.get("usage") if isinstance(response, dict) else getattr(response, "usage", None)
+    details = (usage.get("prompt_tokens_details") if isinstance(usage, dict)
+               else getattr(usage, "prompt_tokens_details", None))
+    cached = details.get("cached_tokens") if isinstance(details, dict) else getattr(details, "cached_tokens", None)
+    return cached if isinstance(cached, int) and not isinstance(cached, bool) and cached > 0 else 0
+
+
 def cost_of_call(model: str, response, litellm_cost: Callable | None = None) -> dict:
     """{"cost": float, "price_source": "litellm" | "table" | "unknown"} for one model response."""
     if litellm_cost is None:
@@ -204,7 +227,10 @@ def cost_of_call(model: str, response, litellm_cost: Callable | None = None) -> 
     price = table_price(model)
     tin, tout = _usage(response)
     if price is not None and tin is not None and tout is not None:
-        return {"cost": (tin * price[0] + tout * price[1]) / 1e6, "price_source": "table"}
+        cached = min(_cached_tokens(response), tin) if price.cached_input is not None else 0
+        cost = ((tin - cached) * price.input + cached * (price.cached_input or 0.0)
+                + tout * price.output) / 1e6
+        return {"cost": cost, "price_source": "table"}
     # mini-swe-agent adds extra["cost"] to its running total, so it must be a number;
     # price_source "unknown" makes the task's cost_usd null in our results.
     return {"cost": 0.0, "price_source": "unknown"}
@@ -684,7 +710,7 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Run mini-swe-agent on the 25-task SWE-bench Verified sample.")
     p.add_argument("--model", required=True, help="litellm model name, e.g. together_ai/openai/gpt-oss-120b")
     p.add_argument("--run-id", required=True)
-    p.add_argument("--cost-cap", type=float, default=DEFAULT_COST_CAP, help="USD per task (default 0.50)")
+    p.add_argument("--cost-cap", type=float, default=DEFAULT_COST_CAP, help="USD per task (default 1.50)")
     p.add_argument("--step-limit", type=int, default=DEFAULT_STEP_LIMIT, help="model calls per task (default 50)")
     p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_S, help="seconds per task (default 1200)")
     p.add_argument("--pull-timeout", type=int, default=DEFAULT_PULL_TIMEOUT_S)
