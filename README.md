@@ -135,6 +135,12 @@ at most 8 per repo), made by `uv run python -m inferno.swebench_tasks`.
 uv run python -m inferno.swebench_run --model together_ai/openai/gpt-oss-120b --run-id gptoss-swe-v1
 ```
 
+The harness is mini-swe-agent's `swebench_backticks.yaml` config with the
+`litellm_textbased` model class: one ```` ```mswea_bash_command ```` block per
+reply, no tool calling (gpt-oss on Together produced invalid parallel tool
+calls under the default `swebench.yaml`). Each result line records
+`agent_config` and `model_class`.
+
 Tasks run one at a time in mini-swe-agent's Docker environment, with a
 per-task cost cap (`--cost-cap`, default $0.50), step limit (`--step-limit`,
 50) and wall-clock timeout (`--timeout`, 1200 s). After every task, including

@@ -312,26 +312,83 @@ def test_price_known():
     assert not sr.price_known("nobody/knows-this-model-xyz")
 
 
-def test_priced_model_class_is_loadable_by_mini_swe_agent():
+def test_priced_model_class_extends_the_textbased_model():
     from minisweagent.models import get_model_class
     from minisweagent.models.litellm_model import LitellmModel
+    from minisweagent.models.litellm_textbased_model import LitellmTextbasedModel
 
-    cls = get_model_class("m", "inferno.swebench_run.PricedLitellmModel")
-    assert issubclass(cls, LitellmModel) and cls._calculate_cost is not LitellmModel._calculate_cost
+    cls = get_model_class("m", sr.MODEL_CLASS_PATH)
+    assert issubclass(cls, LitellmTextbasedModel)
+    assert cls._calculate_cost is not LitellmModel._calculate_cost
+    assert get_model_class("m", sr.MODEL_CLASS) is LitellmTextbasedModel  # the name we record
+
+
+class TextResp:
+    """Just enough of a litellm response for _parse_actions and cost_of_call."""
+
+    def __init__(self, content, tin=100, tout=10):
+        msg = type("M", (), {"content": content, "tool_calls": None})()
+        self.choices = [type("C", (), {"message": msg, "finish_reason": "stop"})()]
+        self.usage = type("U", (), {"prompt_tokens": tin, "completion_tokens": tout})()
+
+
+def test_built_model_parses_one_backtick_block_and_prices_with_the_table(monkeypatch):
+    from minisweagent.exceptions import FormatError
+    from minisweagent.models import get_model
+
+    cfg = sr.build_config("together_ai/openai/gpt-oss-120b", sr.Limits(), "lab")
+    model = get_model(config=cfg["model"])  # no network: the constructor makes no call
+    assert type(model).__name__ == "PricedTextbasedModel"
+
+    ok = TextResp("THOUGHT: look\n\n```mswea_bash_command\nls -la\n```")
+    assert model._parse_actions(ok) == [{"command": "ls -la"}]
+    with pytest.raises(FormatError):  # two commands in one reply is rejected, as mini intends
+        model._parse_actions(TextResp("```mswea_bash_command\nls\n```\n```mswea_bash_command\npwd\n```"))
+
+    import litellm
+    monkeypatch.setattr(litellm.cost_calculator, "completion_cost", raises)
+    assert model._calculate_cost(TextResp("x", 1_000_000, 1_000_000)) == \
+        {"cost": pytest.approx(0.75), "price_source": "table"}
 
 
 # --------------------------------------------------------------------------- config + worker process
 
 
-def test_build_config_merges_our_limits_into_swebench_yaml():
+def test_build_config_uses_backticks_config_with_our_limits():
+    from minisweagent.config import builtin_config_dir, get_config_from_spec
+
     cfg = sr.build_config("together_ai/openai/gpt-oss-120b", sr.Limits(0.25, 7, 60), "lab", "/t.json")
+    mini = get_config_from_spec(builtin_config_dir / "benchmarks" / "swebench_backticks.yaml")
+    assert sr.AGENT_CONFIG == "swebench_backticks" and sr.MODEL_CLASS == "litellm_textbased"
+    assert cfg["agent"]["instance_template"] == mini["agent"]["instance_template"]  # mini's prompt
+    assert "mswea_bash_command" in cfg["agent"]["system_template"]
+    assert cfg["model"]["format_error_template"] == mini["model"]["format_error_template"]
+    assert cfg["model"]["model_class"] == sr.MODEL_CLASS_PATH
+    assert "parallel_tool_calls" not in cfg["model"].get("model_kwargs", {})
     assert cfg["agent"]["step_limit"] == 7 and cfg["agent"]["cost_limit"] == 0.25
     assert cfg["agent"]["wall_time_limit_seconds"] == 60
-    assert "instance_template" in cfg["agent"]  # mini's own prompt is kept
     assert cfg["model"]["cost_tracking"] == "ignore_errors"
     assert cfg["model"]["model_name"] == "together_ai/openai/gpt-oss-120b"
     assert cfg["environment"]["cwd"] == "/testbed"
     assert cfg["environment"]["run_args"] == ["--rm", "--label", f"{sr.LABEL_KEY}=lab"]
+    # mini's own env vars kept, plus BASH_ENV so commands run in the testbed conda env.
+    assert cfg["environment"]["env"]["PAGER"] == "cat"
+    assert cfg["environment"]["env"]["BASH_ENV"] == "/root/.bashrc"
+
+
+def test_result_lines_record_the_harness(tmp_path):
+    go(tmp_path)
+    for r in rows(tmp_path):
+        assert (r["agent_config"], r["model_class"]) == ("swebench_backticks", "litellm_textbased")
+
+
+def test_refuses_to_mix_harnesses_in_one_run_file(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(sr, "RESULTS_DIR", tmp_path)
+    old = {"instance_id": "a", "model": "together_ai/openai/gpt-oss-120b", "outcome": "error"}
+    (tmp_path / "old.jsonl").write_text(json.dumps(old) + "\n")  # tool-calling run: no harness fields
+    with pytest.raises(SystemExit):
+        sr.main(["--model", "together_ai/openai/gpt-oss-120b", "--run-id", "old"])
+    assert "another harness" in capsys.readouterr().err
 
 
 def test_parser_refuses_unknown_price(capsys):

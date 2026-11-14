@@ -8,8 +8,10 @@ For each task in data/swebench_25.json (see inferno.swebench_tasks):
 1. `docker pull` the task's SWE-bench image (its own timeout; not counted
    against the task's wall-clock limit).
 2. Start a worker subprocess that builds mini-swe-agent's own pieces: the
-   swebench.yaml config, `get_sb_environment` (DockerEnvironment, cwd
-   /testbed) and `DefaultAgent`, with our limits merged in, and runs
+   swebench_backticks.yaml config with the litellm_textbased model class (one
+   ```mswea_bash_command``` block per reply, no tool calling; see AGENT_CONFIG),
+   `get_sb_environment` (DockerEnvironment, cwd /testbed) and `DefaultAgent`,
+   with our limits merged in, and runs
    `agent.run(problem_statement)`. The agent saves its trajectory after every
    step, so tokens/steps/cost survive even if the worker is killed.
 3. Kill the worker's whole process group if it outlives the timeout plus a
@@ -67,6 +69,14 @@ from inferno.swebench_tasks import TASKS_FILE, load_task_file, repo_of
 
 RESULTS_DIR = REPO_ROOT / "results" / "swebench"
 LABEL_KEY = "inferno.swebench.task"
+
+# The harness: a mini-swe-agent benchmark config and the model class whose prompt/parser match it.
+# Plain-text actions, because gpt-oss on Together returned dozens of parallel tool calls per
+# reply (some with invalid JSON) under swebench.yaml's tool-calling setup, and one bad call
+# voids the whole reply. Both names are recorded in every result line.
+AGENT_CONFIG = "swebench_backticks"
+MODEL_CLASS = "litellm_textbased"  # PricedTextbasedModel below extends this class
+MODEL_CLASS_PATH = "inferno.swebench_run.PricedTextbasedModel"
 
 DEFAULT_COST_CAP = 0.50
 DEFAULT_STEP_LIMIT = 50
@@ -155,20 +165,26 @@ def cost_of_call(model: str, response, litellm_cost: Callable | None = None) -> 
     return {"cost": 0.0, "price_source": "unknown"}
 
 
+_PRICED_CLASS = None
+
+
 def _priced_model_class():
-    from minisweagent.models.litellm_model import LitellmModel
+    global _PRICED_CLASS
+    if _PRICED_CLASS is None:
+        from minisweagent.models.litellm_textbased_model import LitellmTextbasedModel
 
-    class PricedLitellmModel(LitellmModel):
-        """LitellmModel whose per-call cost falls back to our price table."""
+        class PricedTextbasedModel(LitellmTextbasedModel):
+            """mini's litellm_textbased model; per-call cost is litellm-first, then our table."""
 
-        def _calculate_cost(self, response) -> dict:
-            return cost_of_call(self.config.model_name, response)
+            def _calculate_cost(self, response) -> dict:
+                return cost_of_call(self.config.model_name, response)
 
-    return PricedLitellmModel
+        _PRICED_CLASS = PricedTextbasedModel
+    return _PRICED_CLASS
 
 
 def __getattr__(name):  # lazy, so importing this module doesn't import litellm
-    if name == "PricedLitellmModel":
+    if name == "PricedTextbasedModel":
         return _priced_model_class()
     raise AttributeError(name)
 
@@ -359,9 +375,8 @@ def _read_json(path: Path, default=None):
 # --------------------------------------------------------------------------- worker (child process)
 
 def build_config(model: str, limits: Limits, label: str, traj_path: str | None = None) -> dict:
-    """mini-swe-agent's swebench.yaml with our model, limits and container label merged in."""
-    from minisweagent.config import get_config_from_spec
-    from minisweagent.run.benchmarks.swebench import DEFAULT_CONFIG_FILE
+    """mini-swe-agent's AGENT_CONFIG with our model class, limits and container label merged in."""
+    from minisweagent.config import builtin_config_dir, get_config_from_spec
     from minisweagent.utils.serialize import recursive_merge
 
     ours = {
@@ -373,7 +388,7 @@ def build_config(model: str, limits: Limits, label: str, traj_path: str | None =
         },
         "model": {
             "model_name": model,
-            "model_class": "inferno.swebench_run.PricedLitellmModel",
+            "model_class": MODEL_CLASS_PATH,
             "cost_tracking": "ignore_errors",  # we price calls ourselves; see cost_of_call
         },
         "environment": {
@@ -383,9 +398,14 @@ def build_config(model: str, limits: Limits, label: str, traj_path: str | None =
             # The container kills itself eventually even if every cleanup fails.
             "container_timeout": f"{limits.timeout_s + KILL_GRACE_S + 600}s",
             "pull_timeout": 300,  # the parent has already pulled it
+            # swebench.yaml sets this but swebench_backticks.yaml (2.4.6) doesn't. Commands run
+            # with non-login `bash -c`, so without it they'd skip the image's `conda activate
+            # testbed` and use the base env, which lacks the repo's dependencies.
+            "env": {"BASH_ENV": "/root/.bashrc"},
         },
     }
-    return recursive_merge(get_config_from_spec(DEFAULT_CONFIG_FILE), ours)
+    base = get_config_from_spec(builtin_config_dir / "benchmarks" / f"{AGENT_CONFIG}.yaml")
+    return recursive_merge(base, ours)
 
 
 def _load_api_keys() -> None:
@@ -553,6 +573,8 @@ def run_tasks(
             "error": run.error,
             "git_commit": git_commit,
             "git_dirty": git_dirty,
+            "agent_config": AGENT_CONFIG,
+            "model_class": MODEL_CLASS,
             "mini_swe_agent_version": mini_version,
             "litellm_version": lit.get("litellm_version") or litellm_version,
             "price_map_source": lit.get("price_map_source"),  # None: the worker never got that far
@@ -627,9 +649,14 @@ def main(argv: list[str] | None = None) -> int:
                 "can't work. Add it to the table, or pass --allow-unknown-cost.")
 
     run_file = RESULTS_DIR / f"{args.run_id}.jsonl"
-    models = {r["model"] for r in load_results(run_file)}
+    existing = load_results(run_file)
+    models = {r["model"] for r in existing}
     if models - {args.model}:
         p.error(f"{run_file.name} already has results for {sorted(models)}; use another --run-id")
+    # Lines without these fields come from the earlier tool-calling harness (swebench.yaml).
+    harnesses = {(r.get("agent_config", "swebench"), r.get("model_class", "litellm")) for r in existing}
+    if harnesses - {(AGENT_CONFIG, MODEL_CLASS)}:
+        p.error(f"{run_file.name} has results from another harness {sorted(harnesses)}; use another --run-id")
 
     import minisweagent
 
@@ -646,7 +673,7 @@ def main(argv: list[str] | None = None) -> int:
     instances = load_instances(args.tasks)
     print(f"Run {args.run_id} | {args.model} | {len(instances)} tasks | cap ${limits.cost_cap}, "
           f"{limits.step_limit} steps, {limits.timeout_s}s | commit {commit} | "
-          f"litellm {parent_litellm['litellm_version']} (bundled prices)")
+          f"litellm {parent_litellm['litellm_version']} (bundled prices) | {AGENT_CONFIG} + {MODEL_CLASS}")
 
     docker = DockerCli()
     outcome = run_tasks(
