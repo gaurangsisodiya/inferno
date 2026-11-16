@@ -54,7 +54,7 @@ flowchart LR
 You need Docker (on WSL, enable Docker Desktop's WSL integration), [uv](https://docs.astral.sh/uv/), and a Together AI key.
 
 ```bash
-git clone <this repo> inferno && cd inferno
+git clone https://github.com/gaurangsisodiya/inferno.git && cd inferno
 uv sync                                   # Python 3.12 venv with all dependencies
 cp .env.example .env                      # then set TOGETHER_API_KEY
 QUIXBUGS_REF=4257f44 scripts/setup_quixbugs.sh
