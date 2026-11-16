@@ -187,6 +187,19 @@ version and per-task decisions), `summary.md` (the table) and `cascade.png`.
 The table's "oracle" row routes with hindsight from grading results and is an
 upper bound, not a strategy.
 
+### Failure analysis
+
+[`results/swebench/failures.md`](results/swebench/failures.md) classifies
+every unresolved Kimi task and every submitted-but-unresolved gpt-oss patch
+(wrong file / wrong fix / broke other tests / gave up), with the failing test
+and the gold patch location for each. In short:
+
+- **Kimi:** its 3 misses are in the right file but incomplete.
+- **gpt-oss:** half of its failed patches are in the wrong place, at the
+  spot where the bug shows up rather than where it is.
+- **gpt-oss step-limit runs:** about 40% of their steps went to format
+  errors.
+
 ## Running the QuixBugs tests
 
 Run the tests from inside `data/quixbugs`. Its `conftest.py` puts that directory on `sys.path`,
