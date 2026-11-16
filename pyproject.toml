@@ -1,7 +1,7 @@
 [project]
 name = "inferno"
 version = "0.1.0"
-description = "LLM agent that repairs buggy programs (QuixBugs, later SWE-bench)"
+description = "LLM agent that repairs buggy programs (QuixBugs and SWE-bench Verified)"
 readme = "README.md"
 authors = [
     { name = "Gaurang Sisodiya", email = "gaurangsisodiya@gmail.com" }
