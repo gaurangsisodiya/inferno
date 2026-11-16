@@ -23,6 +23,8 @@ scripts/setup_quixbugs.sh        # clones QuixBugs into data/quixbugs and
 | `src/inferno/rename.py` | Neutral renaming of a program for the memorization check (`run_all --renamed`). |
 | `src/inferno/properties/` | Hypothesis properties, `prop_<program>.py`, for 10 programs. |
 | `src/inferno/validate.py`, `validate_run.py` | Re-check a run's fixes with original tests + properties, writes `results/validated/<run_id>.jsonl`. |
+| `src/inferno/swebench_tasks.py`, `swebench_run.py` | SWE-bench Verified sample and mini-swe-agent runner, writes `results/swebench/<run_id>.jsonl`. |
+| `src/inferno/cascade.py` | Cheap-then-strong cascade simulation over the graded SWE-bench runs. |
 | `scripts/check_properties.py` | Checks each property file passes on the reference version and fails on the buggy one. |
 | `docker/sandbox.Dockerfile` | Sandbox image (Python 3.12 + pytest), built automatically on first use. |
 | `tests/` | Tests for the agent itself (model and Docker are mocked). |
@@ -164,6 +166,26 @@ litellm's prices are the list bundled with its pinned version (uv.lock), not
 one downloaded at startup (`LITELLM_LOCAL_MODEL_COST_MAP=True` is set by the
 runner and checked in the worker). Each line records `litellm_version`,
 `price_map_source`/`price_map_revision`, and `price_source` (litellm or table).
+
+### Grading and the cascade
+
+The predictions are graded with swebench 4.1.0 in its own venv
+(`~/swebench-eval-410`), one `run_evaluation` per run, and the reports are
+copied to `results/swebench/graded/` (`gold.gold-410.json` is the gold-patch
+sanity check of the grader). Then:
+
+```bash
+uv run python -m inferno.cascade
+```
+
+simulates a cheap-then-strong cascade over `cheap-v1` and `strong-v1`. A task
+is escalated to the strong model when the cheap run hit a limit, errored or
+submitted an empty patch, decided from the cheap run record alone, never from
+grading. Cascade cost per task = cheap cost + strong cost if escalated. It
+writes `results/swebench/summary.json` (with the git commit, the swebench
+version and per-task decisions), `summary.md` (the table) and `cascade.png`.
+The table's "oracle" row routes with hindsight from grading results and is an
+upper bound, not a strategy.
 
 ## Running the QuixBugs tests
 

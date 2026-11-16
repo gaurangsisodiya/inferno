@@ -38,3 +38,4 @@ data/*
 results/runs/smoke.jsonl
 results/swebench/smoke-*
 results/swebench/*/
+!results/swebench/graded/
