@@ -161,7 +161,9 @@ for run in cheap-v1 strong-v1; do
 done
 ~/swebench-eval-410/bin/python -m swebench.harness.run_evaluation \
   --dataset_name princeton-nlp/SWE-Bench_Verified --split test \
-  --predictions_path gold --instance_ids sympy__sympy-20590 --max_workers 1 --run_id gold-410
+  --predictions_path gold --instance_ids sympy__sympy-20590 --max_workers 1 \
+  --namespace swebench --cache_level env --clean false --run_id gold-410 \
+  --report_dir ~/swebench-eval/reports
 cp ~/swebench-eval/*.grade-cheap-v1.json ~/swebench-eval/*.grade-strong-v1.json \
    ~/swebench-eval/gold.gold-410.json ~/inferno/results/swebench/graded/
 ```
@@ -239,7 +241,11 @@ From [`results/swebench/summary.md`](results/swebench/summary.md), graded with s
 
   4.1.0 builds its test scripts from its own specs, so its scores may differ slightly from 5.x's.
 - **8 Kimi tasks needed a rerun.** Their first attempt failed on `docker pull` (registry or network errors) before any model call. They were rerun with `--retry-errors`, and the failed attempts cost $0.
-- **The timeout doesn't count time asleep.** The runner's per-task timeout uses a monotonic clock, which stops while the laptop sleeps. A task can therefore run past 1200 s of real time, and its recorded `seconds` leaves out the sleep.
+- **The timeout doesn't fire while the laptop sleeps.** We saw this during `strong-v1`:
+  - The laptop slept, and django-15916 stalled for about 17 hours with its container still up.
+  - The run was killed and resumed, and that task was rerun from scratch.
+
+  The likely cause is that the runner's per-task timeout uses a monotonic clock, which stops while the laptop sleeps. So a task can run well past 1200 s of real time, and its recorded `seconds` leaves out the sleep.
 
 ## Next steps
 
