@@ -149,13 +149,14 @@ uv run python -m inferno.swebench_run --model together_ai/moonshotai/Kimi-K3.1-P
 **Grading** uses swebench 4.1.0 in a separate venv: one run per prediction file, plus a gold-patch sanity check of the grader. Run it only after the agent run has finished, since both use the same image names.
 
 ```bash
+INFERNO=$PWD                              # run from the clone's root
 uv venv ~/swebench-eval-410 --python 3.12
 uv pip install --python ~/swebench-eval-410/bin/python "swebench==4.1.0"
 mkdir -p ~/swebench-eval && cd ~/swebench-eval
 for run in cheap-v1 strong-v1; do
   ~/swebench-eval-410/bin/python -m swebench.harness.run_evaluation \
     --dataset_name princeton-nlp/SWE-Bench_Verified --split test \
-    --predictions_path ~/inferno/results/swebench/$run.preds.json \
+    --predictions_path $INFERNO/results/swebench/$run.preds.json \
     --max_workers 1 --namespace swebench --cache_level env --clean false \
     --timeout 1800 --run_id grade-$run --report_dir ~/swebench-eval/reports
 done
@@ -165,14 +166,17 @@ done
   --namespace swebench --cache_level env --clean false --run_id gold-410 \
   --report_dir ~/swebench-eval/reports
 cp ~/swebench-eval/*.grade-cheap-v1.json ~/swebench-eval/*.grade-strong-v1.json \
-   ~/swebench-eval/gold.gold-410.json ~/inferno/results/swebench/graded/
+   ~/swebench-eval/gold.gold-410.json $INFERNO/results/swebench/graded/
 ```
 
 **The cascade simulation:**
 
 ```bash
-cd ~/inferno && uv run python -m inferno.cascade
+uv run python -m inferno.cascade                          # from the clone's root
+uv run python -m inferno.cascade --swebench-version 4.1.0  # if you don't have ~/swebench-eval-410
 ```
+
+It only reads committed files (the run files, `results/swebench/graded/` and `data/swebench_25.json`), so it needs no API key, Docker or grading. It reads the swebench version from the grader venv `~/swebench-eval-410` (`--grader-python` to change it); without that venv it stops and asks for `--swebench-version`. It overwrites the committed `summary.json` and `summary.md` with the current commit and time, so `git status` shows them as changed; `git checkout results/swebench` undoes that.
 
 - **The rule:** it escalates a task to the strong model when the cheap run hit a limit, errored or submitted an empty patch. The decision uses the cheap run's record alone, never grading results. Cascade cost = cheap cost + strong cost if escalated.
 - **What it writes:** `results/swebench/summary.json` (with the git commit, the swebench version and per-task decisions), `summary.md` and `cascade.png`.
@@ -290,11 +294,11 @@ Baselines (QuixBugs `4257f44`, 10 s per-test timeout):
 
 ## Keeping the reference solutions private
 
-`scripts/setup_quixbugs.sh` moves `correct_python_programs/` and `correct_java_programs/` to `~/inferno-private` (override with `INFERNO_PRIVATE=...`), so the agent's view of the repo never includes the answers. To run the `--correct` tests anyway:
+`scripts/setup_quixbugs.sh` moves `correct_python_programs/` and `correct_java_programs/` to `~/inferno-private` (override with `INFERNO_PRIVATE=...`, and set the same variable when running the agent and `check_properties.py`), so the agent's view of the repo never includes the answers. If that folder already exists, for example from an earlier clone, the script keeps it and just deletes the in-repo copy. To run the `--correct` tests anyway:
 
 ```bash
 cd data/quixbugs
-PYTHONPATH=~/inferno-private uv run --project ../.. pytest python_testcases --correct --timeout=10 -q
+PYTHONPATH=${INFERNO_PRIVATE:-~/inferno-private} uv run --project ../.. pytest python_testcases --correct --timeout=10 -q
 ```
 
 Without that `PYTHONPATH`, every module fails at import (40 errors). Never give the agent this `PYTHONPATH` or access to `~/inferno-private`. The Java tests aren't run.

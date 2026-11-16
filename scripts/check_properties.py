@@ -18,6 +18,7 @@ Exit code 0 if every property file meets both conditions.
 
 from __future__ import annotations
 
+import argparse
 import os
 import subprocess
 import sys
@@ -59,12 +60,24 @@ def run_properties(program: str, package: str, pythonpath: Path) -> dict[str, bo
 
 
 def main(argv: list[str]) -> int:
+    known = programs_with_properties()
+    p = argparse.ArgumentParser(
+        description="Check each property file passes on the reference program and fails on the "
+                    f"buggy one. Reads the reference programs from {PRIVATE_DIR} "
+                    "($INFERNO_PRIVATE); prints only pass/fail.")
+    p.add_argument("programs", nargs="*", metavar="PROGRAM",
+                   help=f"programs to check (default: all {len(known)}: {', '.join(known)})")
+    args = p.parse_args(argv)
+    unknown = [name for name in args.programs if name not in known]
+    if unknown:
+        p.error(f"no property file for: {', '.join(unknown)}")
+
     correct_pkg = PRIVATE_DIR / "correct_python_programs"
     if not correct_pkg.is_dir():
         print(f"error: {correct_pkg} not found (run scripts/setup_quixbugs.sh)", file=sys.stderr)
         return 2
 
-    programs = argv or programs_with_properties()
+    programs = args.programs or known
     problems = []
     for program in programs:
         print(f"... {program}", end="\r", flush=True)
