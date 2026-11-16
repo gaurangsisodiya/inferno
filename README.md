@@ -5,6 +5,8 @@ Inferno is an LLM agent that repairs buggy programs. It has two parts:
 - **QuixBugs:** it fixes the 40 Python programs in a feedback loop, running the tests in a Docker sandbox with no network access. The fixes are then checked with Hypothesis properties, and the whole run is repeated on renamed programs to test for memorization.
 - **SWE-bench Verified:** it runs mini-swe-agent on 25 real GitHub issues with a cheap and a strong model, grades the patches with swebench, and simulates sending only the cheap model's failures to the strong model (a cheap-then-strong cascade).
 
+![Inferno demo](demo/inferno.gif)
+
 **Headline numbers** (all from committed files in `results/`):
 
 - **QuixBugs, gpt-oss-120b:** 38/40 fixed on the first try, 40/40 within 3 tries.
@@ -273,6 +275,7 @@ From [`results/swebench/summary.md`](results/swebench/summary.md), graded with s
 | `src/inferno/cascade.py` | Cascade simulation over the graded SWE-bench runs. |
 | `scripts/setup_quixbugs.sh`, `scripts/check_properties.py` | QuixBugs setup; property self-check. |
 | `docker/sandbox.Dockerfile` | Sandbox image (Python 3.12 + pytest), built on first use. |
+| `demo/inferno.tape`, `demo/show.py` | The demo GIF's [vhs](https://github.com/charmbracelet/vhs) script (one live model call, about $0.0003; `vhs demo/inferno.tape`) and the helper that prints its tables. |
 | `results/` | Committed runs, validations, grading reports and summaries. |
 | [`DECISIONS.md`](DECISIONS.md) | Key design decisions and their trade-offs. |
 
