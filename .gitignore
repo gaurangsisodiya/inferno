@@ -37,3 +37,4 @@ data/*
 !data/swebench_25.json
 results/runs/smoke.jsonl
 results/swebench/smoke-*
+results/swebench/*/
