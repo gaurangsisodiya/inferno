@@ -1,0 +1,361 @@
+{
+  "generated_at": "2026-11-16T19:02:05+00:00",
+  "git_commit": "35a1aea67da3f7059f9315a30e99f5ea221d7333",
+  "git_dirty": false,
+  "swebench_version": "4.1.0",
+  "dataset": "princeton-nlp/SWE-Bench_Verified",
+  "split": "test",
+  "tasks": 25,
+  "runs": {
+    "cheap": {
+      "run_id": "cheap-v1",
+      "model": "together_ai/openai/gpt-oss-120b",
+      "harness": "backticks-v2",
+      "report": "together_ai__openai__gpt-oss-120b.grade-cheap-v1.json"
+    },
+    "strong": {
+      "run_id": "strong-v1",
+      "model": "together_ai/moonshotai/Kimi-K3.1-Pro",
+      "harness": "backticks-v2",
+      "report": "together_ai__moonshotai__Kimi-K3.1-Pro.grade-strong-v1.json"
+    }
+  },
+  "grader_check": {
+    "report": "gold.gold-410.json",
+    "completed": 1,
+    "resolved": 1,
+    "resolved_ids": [
+      "sympy__sympy-20590"
+    ],
+    "passed": true
+  },
+  "rule": "escalate to the strong model when the cheap run hit a limit, errored, or submitted an empty patch; otherwise keep the cheap patch",
+  "escalation_reasons": {
+    "empty_patch": 1,
+    "limit": 13
+  },
+  "strategies": [
+    {
+      "strategy": "cheap",
+      "tasks": 25,
+      "resolved": 5,
+      "resolve_rate": 0.2,
+      "total_cost_usd": 2.77369215,
+      "cost_per_task_usd": 0.110947686,
+      "cost_per_resolved_usd": 0.55473843,
+      "escalated": null,
+      "note": null
+    },
+    {
+      "strategy": "strong",
+      "tasks": 25,
+      "resolved": 22,
+      "resolve_rate": 0.88,
+      "total_cost_usd": 3.7504492000000003,
+      "cost_per_task_usd": 0.150017968,
+      "cost_per_resolved_usd": 0.17047496363636364,
+      "escalated": null,
+      "note": null
+    },
+    {
+      "strategy": "cascade",
+      "tasks": 25,
+      "resolved": 18,
+      "resolve_rate": 0.72,
+      "total_cost_usd": 4.72272615,
+      "cost_per_task_usd": 0.188909046,
+      "cost_per_resolved_usd": 0.262373675,
+      "escalated": 14,
+      "note": null
+    },
+    {
+      "strategy": "oracle",
+      "tasks": 25,
+      "resolved": 22,
+      "resolve_rate": 0.88,
+      "total_cost_usd": 2.99273705,
+      "cost_per_task_usd": 0.119709482,
+      "cost_per_resolved_usd": 0.13603350227272729,
+      "escalated": 17,
+      "note": "upper bound: routes with hindsight from grading results, not a real strategy"
+    }
+  ],
+  "cost_caveats": [],
+  "per_task": [
+    {
+      "instance_id": "django__django-14672",
+      "escalation": null,
+      "cheap_cost_usd": 0.0638043,
+      "strong_cost_usd": 0.21841000000000005,
+      "cheap_resolved": false,
+      "strong_resolved": true,
+      "cascade_resolved": false,
+      "cascade_cost_usd": 0.0638043,
+      "oracle_choice": "strong"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-10449",
+      "escalation": null,
+      "cheap_cost_usd": 0.11087025000000002,
+      "strong_cost_usd": 0.30175640000000004,
+      "cheap_resolved": true,
+      "strong_resolved": true,
+      "cascade_resolved": true,
+      "cascade_cost_usd": 0.11087025000000002,
+      "oracle_choice": "cheap"
+    },
+    {
+      "instance_id": "django__django-11299",
+      "escalation": "limit",
+      "cheap_cost_usd": 0.2271996,
+      "strong_cost_usd": 0.08186239999999999,
+      "cheap_resolved": false,
+      "strong_resolved": true,
+      "cascade_resolved": true,
+      "cascade_cost_usd": 0.309062,
+      "oracle_choice": "strong"
+    },
+    {
+      "instance_id": "django__django-14493",
+      "escalation": null,
+      "cheap_cost_usd": 0.022120199999999996,
+      "strong_cost_usd": 0.0627936,
+      "cheap_resolved": false,
+      "strong_resolved": true,
+      "cascade_resolved": false,
+      "cascade_cost_usd": 0.022120199999999996,
+      "oracle_choice": "strong"
+    },
+    {
+      "instance_id": "django__django-11551",
+      "escalation": null,
+      "cheap_cost_usd": 0.06427605,
+      "strong_cost_usd": 0.255006,
+      "cheap_resolved": true,
+      "strong_resolved": true,
+      "cascade_resolved": true,
+      "cascade_cost_usd": 0.06427605,
+      "oracle_choice": "cheap"
+    },
+    {
+      "instance_id": "django__django-12143",
+      "escalation": "limit",
+      "cheap_cost_usd": 0.13750155,
+      "strong_cost_usd": 0.08423800000000001,
+      "cheap_resolved": false,
+      "strong_resolved": true,
+      "cascade_resolved": true,
+      "cascade_cost_usd": 0.22173955,
+      "oracle_choice": "strong"
+    },
+    {
+      "instance_id": "pydata__xarray-6938",
+      "escalation": "limit",
+      "cheap_cost_usd": 0.11856824999999996,
+      "strong_cost_usd": 0.16842479999999999,
+      "cheap_resolved": false,
+      "strong_resolved": false,
+      "cascade_resolved": false,
+      "cascade_cost_usd": 0.28699304999999997,
+      "oracle_choice": "cheap"
+    },
+    {
+      "instance_id": "django__django-15916",
+      "escalation": null,
+      "cheap_cost_usd": 0.07247625,
+      "strong_cost_usd": 0.107594,
+      "cheap_resolved": false,
+      "strong_resolved": false,
+      "cascade_resolved": false,
+      "cascade_cost_usd": 0.07247625,
+      "oracle_choice": "cheap"
+    },
+    {
+      "instance_id": "django__django-12193",
+      "escalation": null,
+      "cheap_cost_usd": 0.14931090000000002,
+      "strong_cost_usd": 0.0584944,
+      "cheap_resolved": false,
+      "strong_resolved": true,
+      "cascade_resolved": false,
+      "cascade_cost_usd": 0.14931090000000002,
+      "oracle_choice": "strong"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-5262",
+      "escalation": "limit",
+      "cheap_cost_usd": 0.15843569999999998,
+      "strong_cost_usd": 0.0599308,
+      "cheap_resolved": false,
+      "strong_resolved": true,
+      "cascade_resolved": true,
+      "cascade_cost_usd": 0.2183665,
+      "oracle_choice": "strong"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-8459",
+      "escalation": "limit",
+      "cheap_cost_usd": 0.1226922,
+      "strong_cost_usd": 0.1857984,
+      "cheap_resolved": false,
+      "strong_resolved": true,
+      "cascade_resolved": true,
+      "cascade_cost_usd": 0.3084906,
+      "oracle_choice": "strong"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-9281",
+      "escalation": "limit",
+      "cheap_cost_usd": 0.16470989999999996,
+      "strong_cost_usd": 0.10102920000000001,
+      "cheap_resolved": false,
+      "strong_resolved": true,
+      "cascade_resolved": true,
+      "cascade_cost_usd": 0.2657391,
+      "oracle_choice": "strong"
+    },
+    {
+      "instance_id": "django__django-13012",
+      "escalation": "limit",
+      "cheap_cost_usd": 0.17715345,
+      "strong_cost_usd": 0.1260052,
+      "cheap_resolved": false,
+      "strong_resolved": true,
+      "cascade_resolved": true,
+      "cascade_cost_usd": 0.30315865,
+      "oracle_choice": "strong"
+    },
+    {
+      "instance_id": "sympy__sympy-20916",
+      "escalation": null,
+      "cheap_cost_usd": 0.05690010000000001,
+      "strong_cost_usd": 0.21178000000000002,
+      "cheap_resolved": false,
+      "strong_resolved": false,
+      "cascade_resolved": false,
+      "cascade_cost_usd": 0.05690010000000001,
+      "oracle_choice": "cheap"
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-14629",
+      "escalation": "limit",
+      "cheap_cost_usd": 0.1440864,
+      "strong_cost_usd": 0.1375176,
+      "cheap_resolved": false,
+      "strong_resolved": true,
+      "cascade_resolved": true,
+      "cascade_cost_usd": 0.28160399999999997,
+      "oracle_choice": "strong"
+    },
+    {
+      "instance_id": "sympy__sympy-14248",
+      "escalation": "empty_patch",
+      "cheap_cost_usd": 0.0034599,
+      "strong_cost_usd": 0.22841279999999997,
+      "cheap_resolved": false,
+      "strong_resolved": true,
+      "cascade_resolved": true,
+      "cascade_cost_usd": 0.23187269999999996,
+      "oracle_choice": "strong"
+    },
+    {
+      "instance_id": "pylint-dev__pylint-4551",
+      "escalation": "limit",
+      "cheap_cost_usd": 0.15096255000000003,
+      "strong_cost_usd": 0.1423308,
+      "cheap_resolved": false,
+      "strong_resolved": true,
+      "cascade_resolved": true,
+      "cascade_cost_usd": 0.29329335,
+      "oracle_choice": "strong"
+    },
+    {
+      "instance_id": "pallets__flask-5014",
+      "escalation": null,
+      "cheap_cost_usd": 0.06690105,
+      "strong_cost_usd": 0.11884719999999999,
+      "cheap_resolved": true,
+      "strong_resolved": true,
+      "cascade_resolved": true,
+      "cascade_cost_usd": 0.06690105,
+      "oracle_choice": "cheap"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-7440",
+      "escalation": "limit",
+      "cheap_cost_usd": 0.19332554999999996,
+      "strong_cost_usd": 0.20294720000000002,
+      "cheap_resolved": false,
+      "strong_resolved": true,
+      "cascade_resolved": true,
+      "cascade_cost_usd": 0.39627274999999995,
+      "oracle_choice": "strong"
+    },
+    {
+      "instance_id": "astropy__astropy-14096",
+      "escalation": null,
+      "cheap_cost_usd": 0.050521649999999994,
+      "strong_cost_usd": 0.1159252,
+      "cheap_resolved": true,
+      "strong_resolved": true,
+      "cascade_resolved": true,
+      "cascade_cost_usd": 0.050521649999999994,
+      "oracle_choice": "cheap"
+    },
+    {
+      "instance_id": "sympy__sympy-17655",
+      "escalation": "limit",
+      "cheap_cost_usd": 0.1313205,
+      "strong_cost_usd": 0.11060959999999997,
+      "cheap_resolved": false,
+      "strong_resolved": true,
+      "cascade_resolved": true,
+      "cascade_cost_usd": 0.24193009999999998,
+      "oracle_choice": "strong"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-25332",
+      "escalation": null,
+      "cheap_cost_usd": 0.02872845,
+      "strong_cost_usd": 0.25528920000000005,
+      "cheap_resolved": false,
+      "strong_resolved": true,
+      "cascade_resolved": false,
+      "cascade_cost_usd": 0.02872845,
+      "oracle_choice": "strong"
+    },
+    {
+      "instance_id": "astropy__astropy-8872",
+      "escalation": null,
+      "cheap_cost_usd": 0.07662705,
+      "strong_cost_usd": 0.09551920000000001,
+      "cheap_resolved": true,
+      "strong_resolved": true,
+      "cascade_resolved": true,
+      "cascade_cost_usd": 0.07662705,
+      "oracle_choice": "cheap"
+    },
+    {
+      "instance_id": "sympy__sympy-13551",
+      "escalation": "limit",
+      "cheap_cost_usd": 0.16603995,
+      "strong_cost_usd": 0.2150968,
+      "cheap_resolved": false,
+      "strong_resolved": true,
+      "cascade_resolved": true,
+      "cascade_cost_usd": 0.38113675,
+      "oracle_choice": "strong"
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-14710",
+      "escalation": "limit",
+      "cheap_cost_usd": 0.1157004,
+      "strong_cost_usd": 0.1048304,
+      "cheap_resolved": false,
+      "strong_resolved": true,
+      "cascade_resolved": true,
+      "cascade_cost_usd": 0.2205308,
+      "oracle_choice": "strong"
+    }
+  ]
+}
