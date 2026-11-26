@@ -7,7 +7,7 @@ Inferno is an LLM agent that repairs buggy programs. It has two parts:
 
 > **Model retirement:** the committed results were produced with `openai/gpt-oss-120b` before 2026-12-09, when Together retires it from serverless. After that date the live commands need another model, for example `zai-org/GLM-5.3-Flash` ($0.15 / $0.50 per 1M tokens). GLM-5.3-Flash has only been checked with plain chat, not with tool calling or this repo's harness, so its numbers may differ.
 >
-> - QuixBugs: set `INFERNO_MODEL=zai-org/GLM-5.3-Flash` in `.env`, or pass `--model zai-org/GLM-5.3-Flash` to `inferno.loop` / `inferno.run_all`. `client.py` has no price for it, so the cost shows as unknown.
+> - QuixBugs: set `INFERNO_MODEL=zai-org/GLM-5.3-Flash` in `.env`, or pass `--model zai-org/GLM-5.3-Flash` to `inferno.loop` / `inferno.run_all`. Its price ($0.15 / $0.50) is in `client.py`'s table.
 > - SWE-bench: pass the litellm name, `--model together_ai/zai-org/GLM-5.3-Flash`. litellm 1.109.1's bundled map prices it, so the cost cap works.
 > - It is a reasoning model, and reasoning counts as output tokens. Neither path sets `max_tokens`, so the provider default applies. If you add a cap, leave a few hundred tokens for reasoning, or replies can come back empty.
 

@@ -78,3 +78,9 @@ def test_estimate_cost():
     # 1M in at $0.15 + 1M out at $0.60
     assert estimate_cost(DEFAULT_MODEL, 1_000_000, 1_000_000) == pytest.approx(0.75)
     assert estimate_cost("unknown/model", 100, 100) is None
+
+
+def test_estimate_cost_glm_flash():
+    # 1M in at $0.15 + 1M out at $0.50 (Together /v1/models, 2026-11-26)
+    assert estimate_cost("zai-org/GLM-5.3-Flash", 1_000_000, 1_000_000) == pytest.approx(0.65)
+    assert estimate_cost("zai-org/GLM-5.3-Flash", 2_000_000, 0) == pytest.approx(0.30)

@@ -25,6 +25,7 @@ DEFAULT_MODEL = "openai/gpt-oss-120b"
 # Last checked 2026-11-14. Update this when prices change or models are added.
 PRICES_PER_MILLION: dict[str, tuple[float, float]] = {
     "openai/gpt-oss-120b": (0.15, 0.60),
+    "zai-org/GLM-5.3-Flash": (0.15, 0.50),  # Together /v1/models, 2026-11-26
 }
 
 # This file lives at <repo>/src/inferno/client.py, so the repo root is 3 levels up.
